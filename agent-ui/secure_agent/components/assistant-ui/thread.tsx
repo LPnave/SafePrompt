@@ -37,6 +37,7 @@ import {
 } from "@/components/assistant-ui/attachment";
 
 import { cn } from "@/lib/utils";
+import { AutoTitleGenerator } from "./auto-title-generator";
 
 export const Thread: FC = () => {
   return (
@@ -48,6 +49,7 @@ export const Thread: FC = () => {
             ["--thread-max-width" as string]: "44rem",
           }}
         >
+          <AutoTitleGenerator />
           <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll px-4">
             <ThreadPrimitive.If empty>
               <ThreadWelcome />
@@ -209,6 +211,13 @@ const ComposerAction: FC = () => {
       if (!text.trim()) return;
 
       try {
+        // Generate title from original message if this is the first message
+        const threadState = thread.getState();
+        if (threadState.messages.length === 0) {
+          // This will be the first message - store original for title generation
+          (window as any).__firstMessageForTitle = text;
+        }
+
         // First, sanitize the input
         console.log(
           "[SanitizingComposer] Sanitizing input:",
@@ -244,7 +253,10 @@ const ComposerAction: FC = () => {
           console.log("[SanitizingComposer] No sanitization needed");
         }
 
-        // Clear the composer and cancel any ongoing composition
+        // Clear the input box immediately
+        composer.setText("");
+        
+        // Cancel any ongoing composition
         composer.cancel();
 
         // Add user message with sanitized content
