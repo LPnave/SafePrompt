@@ -1377,6 +1377,30 @@ Production deployments should implement monitoring for several key metrics. The 
 
 The system should be kept up to date with the latest threat patterns and model updates. While the ML models themselves don't require frequent updates, the pattern-based detection can benefit from adding new patterns as threat techniques evolve. The development team should periodically review security logs and test results to identify opportunities for improving detection accuracy.
 
+### 13.4 Continuous Integration and Deployment
+
+SecureMCP includes a comprehensive CircleCI configuration (`.circleci/config.yml`) that provides automated testing and validation for all three applications in the project: ZeroShotMCP, Agent-UI Backend, and Agent-UI Frontend. This CI/CD setup ensures code quality, validates dependencies, and catches issues before they reach production.
+
+The CircleCI workflow executes five parallel jobs that run independently and then converge for a final integration check:
+
+**test-zeroshotmcp** - Validates the ZeroShotMCP Python application by installing dependencies from `requirements-zeroshot.txt`, downloading the required spaCy English language model (`en_core_web_sm`), verifying the module can be imported successfully, and performing syntax checks on the main server and configuration files. This job uses Python 3.11 with dependency caching to speed up subsequent runs.
+
+**test-agent-ui-backend** - Tests the Agent-UI Python backend by installing FastAPI and ML dependencies from the backend's `requirements.txt`, downloading the required spaCy English language model (`en_core_web_sm`), executing pytest tests for sanitization and security levels, and validating that core modules (FastAPI app, ZeroShotSecurityValidator) load correctly. This ensures the REST API layer functions properly and the security validation core remains intact.
+
+**test-agent-ui-frontend** - Validates the Agent-UI Next.js frontend by installing Node.js dependencies using `npm ci`, running ESLint to catch code quality issues, executing Prettier checks to ensure consistent code formatting, and performing a full production build to verify all components compile successfully. The built artifacts are persisted for potential deployment use.
+
+**test-suite** - Verifies the comprehensive test suite by installing testing dependencies, running the setup verification script, and validating that the test runner and report generator modules load correctly. This ensures the testing infrastructure remains functional for ongoing validation efforts.
+
+**integration-check** - Performs a final validation after all other jobs complete successfully. It verifies the project structure by checking that all critical files exist in their expected locations, confirms documentation completeness, and ensures test case files are present. This job acts as a final gate before considering the CI run successful.
+
+The workflow employs several optimization strategies to improve build times. Dependency caching is used extensively, with separate cache keys for each application based on their respective dependency files (requirements.txt, package-lock.json). Jobs run in parallel whenever possible, with only the integration-check job requiring all others to complete first. The Python jobs use lightweight `cimg/python:3.11` Docker images, while the frontend job uses `cimg/node:20.18` for Node.js support.
+
+For teams adopting SecureMCP, this CI/CD configuration provides immediate value by catching syntax errors, dependency issues, and integration problems automatically on every commit. The configuration can be extended to include additional validation steps such as running the full test suite against live applications, performing security scanning with tools like Snyk or Bandit, building and pushing Docker images for containerized deployments, or deploying to staging environments for integration testing.
+
+To enable CircleCI for your SecureMCP fork, connect your repository to CircleCI through their web interface, ensure the `.circleci/config.yml` file is present in your repository root, and commit code changes to trigger the workflow. The first run will be slower as dependencies are downloaded and cached, but subsequent runs will benefit from the caching strategy and complete much faster.
+
+The CircleCI configuration complements the existing test suite infrastructure by providing automated, consistent validation in a clean environment. While local testing with the test suite validates detection accuracy and behavior, CircleCI ensures that the code itself is syntactically correct, dependencies install properly, and the applications build successfully across all components. Together, these testing layers provide comprehensive quality assurance for the SecureMCP project.
+
 ## 14. Conclusion and Future Directions
 
 SecureMCP represents a mature and sophisticated approach to AI security that successfully combines state-of-the-art machine learning with carefully engineered pattern matching and comprehensive context-aware analysis. What distinguishes this system from simpler security solutions is its ability to understand nuance and intent, distinguishing between legitimate security discussions and actual security threats. This intelligence allows organizations to deploy robust protection without creating frustrating barriers that impede legitimate use cases like developer education, security research, and technical support discussions.

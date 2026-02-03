@@ -47,31 +47,31 @@ class ZeroShotSecurityValidator:
     def _configure_security_thresholds(self):
         """Configure detection thresholds based on security level"""
         if self.security_level == SecurityLevel.LOW:
-            # LOW: Development/Testing - Less sensitive, warn only
+            # LOW: Development/Testing - Less sensitive, minimal detection
             self.detection_threshold = 0.7      # Higher threshold for detection
-            self.blocking_threshold = 0.95      # Almost never block
+            self.blocking_threshold = 0.95      # N/A (block_mode is False)
             self.entropy_threshold = 4.2        # Higher entropy required
             self.credential_fallback_threshold = 0.25  # Less aggressive fallback
-            self.block_mode = False             # Warn only, don't block
-            logger.info("Security thresholds: LOW (development mode - warnings only)")
+            self.block_mode = False             # Never blocks
+            logger.info("Security thresholds: LOW (minimal detection, no blocking)")
         
         elif self.security_level == SecurityLevel.MEDIUM:
-            # MEDIUM: Production Default - Balanced protection
+            # MEDIUM: Production Default - Sanitize but don't block
             self.detection_threshold = 0.6      # Moderate detection
-            self.blocking_threshold = 0.8       # Block high-confidence threats
+            self.blocking_threshold = 0.8       # High threshold (but doesn't block due to block_mode)
             self.entropy_threshold = 3.5        # Standard entropy threshold
             self.credential_fallback_threshold = 0.15  # Standard fallback
-            self.block_mode = True              # Block high-confidence threats
-            logger.info("Security thresholds: MEDIUM (balanced production mode)")
+            self.block_mode = False             # Sanitize and warn, but don't block
+            logger.info("Security thresholds: MEDIUM (sanitize and send mode)")
         
         else:  # HIGH
-            # HIGH: Maximum Security - Very sensitive, aggressive blocking
+            # HIGH: Maximum Security - Very sensitive, aggressive blocking (ONLY level that blocks)
             self.detection_threshold = 0.4      # Lower threshold = more sensitive
             self.blocking_threshold = 0.6       # Block medium+ confidence threats
             self.entropy_threshold = 3.0        # Lower entropy = more aggressive
             self.credential_fallback_threshold = 0.1   # Very aggressive fallback
-            self.block_mode = True              # Always block threats
-            logger.info("Security thresholds: HIGH (maximum security mode)")
+            self.block_mode = True              # ONLY HIGH level blocks threats
+            logger.info("Security thresholds: HIGH (maximum security - blocking enabled)")
 
     def setup_models(self):
         """Initialize zero-shot classification models and specialized security models"""
@@ -1140,7 +1140,8 @@ class ZeroShotSecurityValidator:
             'azure', 'aws', 'gcp', 'oauth', 'jwt'
         ]
         
-        pattern = r'(?i)(?:' + '|'.join(CREDENTIAL_KEYWORDS) + r')(?:\s+(?:key|id|token|secret|code|subscription))?\s*[:=]?\s*([A-Za-z0-9\-_\.]{6,})'
+        # Updated pattern to handle natural language disclosure (is/are/was/were)
+        pattern = r'(?i)(?:' + '|'.join(CREDENTIAL_KEYWORDS) + r')(?:\s+(?:key|id|token|secret|code|subscription))?\s*(?:is|are|was|were|[:=])?\s*([A-Za-z0-9\-_\.]{6,})'
         
         matches = re.finditer(pattern, text)
         for match in reversed(list(matches)):

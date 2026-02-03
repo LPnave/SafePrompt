@@ -22,7 +22,7 @@ import SettingsDialog from "@/components/SettingsDialog";
 
 export const Assistant = () => {
   const runtime = useDataStreamRuntime({
-    api: "/api/chat",  // Use Next.js API route as proxy
+    api: "/api/chat", // Use Next.js API route as proxy
   });
 
   return (

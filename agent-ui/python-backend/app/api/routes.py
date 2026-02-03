@@ -63,6 +63,7 @@ async def sanitize_prompt(request: SanitizeRequest):
         if request.security_level:
             try:
                 validator.security_level = SecurityLevel(request.security_level.lower())
+                validator._configure_security_thresholds()  # Reconfigure thresholds for new level
                 logger.debug(f"Security level set to: {request.security_level}")
             except ValueError:
                 logger.error(f"Invalid security level: {request.security_level}")
@@ -135,6 +136,7 @@ async def sanitize_batch(request: BatchSanitizeRequest):
         if request.security_level:
             try:
                 validator.security_level = SecurityLevel(request.security_level.lower())
+                validator._configure_security_thresholds()  # Reconfigure thresholds for new level
             except ValueError:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -258,6 +260,7 @@ async def chat(raw_request: FastAPIRequest):
         if request.security_level:
             try:
                 validator.security_level = SecurityLevel(request.security_level.lower())
+                validator._configure_security_thresholds()  # Reconfigure thresholds for new level
             except ValueError:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -280,13 +283,16 @@ async def chat(raw_request: FastAPIRequest):
         
         validation_result = validator.validate_prompt(original_content)
         
-        # Check if prompt should be blocked
-        if not validation_result.is_safe and validation_result.blocked_patterns:
+        # Check if prompt should be blocked (only if block_mode is enabled)
+        # At LOW level (block_mode=False), threats are detected but not blocked
+        if validator.block_mode and not validation_result.is_safe and validation_result.blocked_patterns:
             logger.warning(f"Prompt blocked: {validation_result.blocked_patterns}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Prompt blocked due to security concerns: {', '.join(validation_result.warnings)}"
             )
+        elif not validator.block_mode and validation_result.blocked_patterns:
+            logger.info(f"Threats detected but allowed (LOW level): {validation_result.blocked_patterns}")
         
         # Use sanitized prompt
         sanitized_content = validation_result.modified_prompt
@@ -495,6 +501,7 @@ async def update_security_level(request: SecurityLevelUpdate):
     try:
         new_level = SecurityLevel(request.level.lower())
         validator.security_level = new_level
+        validator._configure_security_thresholds()  # Reconfigure thresholds for new level
         logger.info(f"Security level updated to: {new_level.value}")
         
         return SecurityLevelResponse(

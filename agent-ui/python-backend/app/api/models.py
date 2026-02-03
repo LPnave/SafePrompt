@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class SanitizeRequest(BaseModel):
     """Request model for sanitization endpoint"""
     prompt: str = Field(..., description="The prompt to sanitize", min_length=1)
-    security_level: Optional[str] = Field("medium", description="Security level: low, medium, or high")
+    security_level: Optional[str] = Field(None, description="Security level: low, medium, or high (None = use global setting)")
     return_details: bool = Field(False, description="Whether to return detailed classification info")
 
 
@@ -29,7 +29,7 @@ class SanitizeResponse(BaseModel):
 class BatchSanitizeRequest(BaseModel):
     """Request model for batch sanitization"""
     prompts: List[str] = Field(..., description="List of prompts to sanitize")
-    security_level: Optional[str] = Field("medium", description="Security level for all prompts")
+    security_level: Optional[str] = Field(None, description="Security level for all prompts (None = use global setting)")
     return_details: bool = Field(False, description="Whether to return detailed info")
 
 
@@ -81,7 +81,7 @@ class ChatRequest(BaseModel):
     model_config = {"extra": "allow"}  # Allow extra fields from frontend
     
     messages: List[ChatMessage] = Field(..., description="List of chat messages")
-    security_level: Optional[str] = Field(default="medium", description="Security level for sanitization")
+    security_level: Optional[str] = Field(default=None, description="Security level for sanitization (None = use global setting)")
     stream: Optional[bool] = Field(default=False, description="Whether to stream the response")
 
 

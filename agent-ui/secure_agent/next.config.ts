@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // Enable React Strict Mode for better development experience
   reactStrictMode: true,
-  
+
   // Webpack configuration for better hot reload
   webpack: (config, { dev, isServer }) => {
     if (dev && !isServer) {

@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { Settings, X } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useState } from "react";
+import { Settings } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -10,8 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import SecurityLevelSelector from '@/components/SecurityLevelSelector';
+} from "@/components/ui/dialog";
+import SecurityLevelSelector from "@/components/SecurityLevelSelector";
 
 export default function SettingsDialog() {
   const [open, setOpen] = useState(false);
@@ -35,10 +35,11 @@ export default function SettingsDialog() {
             Security Settings
           </DialogTitle>
           <DialogDescription>
-            Configure how aggressively the system detects and blocks security threats.
+            Configure how aggressively the system detects and blocks security
+            threats.
           </DialogDescription>
         </DialogHeader>
-        
+
         <div className="py-4">
           <SecurityLevelSelector />
         </div>
@@ -46,4 +47,3 @@ export default function SettingsDialog() {
     </Dialog>
   );
 }
-
