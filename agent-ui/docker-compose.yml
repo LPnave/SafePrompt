@@ -1,0 +1,82 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL database
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: securemcp
+      POSTGRES_USER: securemcp
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-securemcp_dev_pass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"        # expose for local tools (DBeaver, psql, etc.)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securemcp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Python FastAPI backend
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./python-backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    environment:
+      PORT: 8003
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql+asyncpg://securemcp:${DB_PASSWORD:-securemcp_dev_pass}@db:5432/securemcp
+      CORS_ORIGINS: http://localhost:3000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DEFAULT_SECURITY_LEVEL: ${DEFAULT_SECURITY_LEVEL:-medium}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_API_URL: https://generativelanguage.googleapis.com/v1beta/models
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-60}
+      JWT_REFRESH_EXPIRY_DAYS: ${JWT_REFRESH_EXPIRY_DAYS:-7}
+      STORE_RAW_PROMPTS: ${STORE_RAW_PROMPTS:-false}
+      # Cache ML model weights across restarts
+      MODEL_CACHE_DIR: /app/models
+      TRANSFORMERS_CACHE: /app/models/transformers
+      HF_HOME: /app/models/hf
+    volumes:
+      - ml_models:/app/models    # persist large ML model weights
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Next.js frontend
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./secure_agent
+      dockerfile: Dockerfile
+      args:
+        # Passed at build time so NEXT_PUBLIC_ vars are baked into the bundle
+        NEXT_PUBLIC_SANITIZER_API_URL: http://localhost:8003
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Browser-side calls use the published port on the host
+      NEXT_PUBLIC_SANITIZER_API_URL: http://localhost:8003
+      # Server-side proxy (route.ts) uses the internal Docker service name
+      BACKEND_INTERNAL_URL: http://backend:8003
+      NODE_ENV: production
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  ml_models:

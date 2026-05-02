@@ -1,69 +1,82 @@
 """
-FastAPI application entry point for the sanitization service
+FastAPI application entry point
 """
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import router, set_validator
 from app.core.config import settings
+from app.core.database import check_db_connection, AsyncSessionLocal
 from app.core.security import ZeroShotSecurityValidator
+from app.core.audit import audit_worker
+from app.db.seed import seed_database
+from app.services.chat_service import set_validator
+from app.api.controllers.auth_controller import router as auth_router
+from app.api.controllers.chat_controller import router as chat_router
+from app.api.controllers.sanitize_controller import router as sanitize_router
+from app.api.controllers.admin_controller import router as admin_router
+from app.api.controllers.reporting_controller import router as reporting_router
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 
-# Lifespan context manager for startup/shutdown events
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Lifespan context manager for FastAPI
-    Handles model loading on startup and cleanup on shutdown
-    """
-    # Startup
     logger.info("=" * 60)
-    logger.info("Starting SecureMCP Python Backend")
+    logger.info("Starting SecureMCP Enterprise Backend v2.0")
     logger.info("=" * 60)
-    logger.info(f"Loading ML models...")
-    
+
+    # 1. Verify database connection (migrations are run by start.bat / CI before startup)
+    await check_db_connection()
+    logger.info("Database ready")
+
+    # 2. Seed default roles and users (idempotent)
+    async with AsyncSessionLocal() as db:
+        await seed_database(db)
+
+    # 3. Load ML security models
+    logger.info("Loading ML security models...")
     start = time.time()
     try:
-        # Initialize the security validator with ML models
         validator = ZeroShotSecurityValidator(settings.security_level)
         set_validator(validator)
-        
-        load_time = time.time() - start
-        logger.info(f"✓ Models loaded successfully in {load_time:.2f} seconds")
-        logger.info(f"✓ Security level: {settings.security_level.value}")
-        logger.info(f"✓ CORS origins: {settings.cors_origins_list}")
-        logger.info(f"✓ Server: {settings.HOST}:{settings.PORT}")
-        logger.info("=" * 60)
-        logger.info("Server ready to accept requests!")
-        logger.info("=" * 60)
-        
+        logger.info(f"Models loaded in {time.time() - start:.2f}s — level: {settings.security_level.value}")
     except Exception as e:
-        logger.error(f"✗ Failed to load models: {e}")
-        logger.error("Server starting without models - health checks will fail")
-    
+        logger.error(f"Failed to load ML models: {e}")
+        logger.error("Server will start but security validation will fail")
+
+    # 4. Start background audit worker
+    audit_task = asyncio.create_task(audit_worker(AsyncSessionLocal))
+    logger.info("Audit worker started")
+
+    logger.info("=" * 60)
+    logger.info(f"Server ready on {settings.HOST}:{settings.PORT}")
+    logger.info("=" * 60)
+
     yield
-    
+
     # Shutdown
-    logger.info("Shutting down server...")
+    audit_task.cancel()
+    try:
+        await audit_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("Audit worker stopped. Server shutting down.")
 
 
-# Create FastAPI application
 app = FastAPI(
-    title="SecureMCP Sanitization API",
-    description="ML-based prompt sanitization service with zero-shot classification",
-    version="1.0.0",
-    lifespan=lifespan
+    title="SecureMCP Enterprise API",
+    description="Enterprise-grade prompt security pipeline with RBAC and audit logging",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
-
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -72,45 +85,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register all routers
+app.include_router(auth_router)
+app.include_router(chat_router)
+app.include_router(sanitize_router)
+app.include_router(admin_router)
+app.include_router(reporting_router)
 
-# Include API routes
-app.include_router(router)
 
-
-# Root endpoint
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {
-        "service": "SecureMCP Sanitization API",
-        "version": "1.0.0",
+        "service": "SecureMCP Enterprise API",
+        "version": "2.0.0",
         "status": "running",
         "docs": "/docs",
-        "health": "/api/health"
+        "health": "/api/health",
     }
 
 
-# Global exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Handle unexpected exceptions"""
-    logger.error(f"Unhandled exception: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": "Internal server error",
-            "error": str(exc)
-        }
-    )
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 if __name__ == "__main__":
+    import sys
+    import os
+    # Ensure the python-backend directory is on sys.path when running directly
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
     import uvicorn
-    
     uvicorn.run(
         "app.main:app",
         host=settings.HOST,
         port=settings.PORT,
         reload=True,
-        log_level=settings.LOG_LEVEL.lower()
+        log_level=settings.LOG_LEVEL.lower(),
     )

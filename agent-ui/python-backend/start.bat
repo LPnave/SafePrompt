@@ -56,11 +56,30 @@ if not exist ".env" (
     echo .env file created
 )
 
+REM Run database migrations before starting the server
+echo.
+echo ================================================
+echo    Running Database Migrations (Alembic)...
+echo ================================================
+echo.
+alembic upgrade head
+if errorlevel 1 (
+    echo.
+    echo ERROR: Database migration failed. Is PostgreSQL running?
+    echo Make sure the database is up before starting the server.
+    echo   - Docker: docker-compose up db -d
+    echo   - Local:  ensure PostgreSQL is running and DATABASE_URL in .env is correct
+    echo.
+    pause
+    exit /b 1
+)
+echo Migrations applied successfully.
+
 echo.
 echo ================================================
 echo    Starting FastAPI Server...
 echo ================================================
 echo.
 
-REM Start the server
-python app\main.py
+REM Start the server (run as module so 'app' package is found correctly)
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload

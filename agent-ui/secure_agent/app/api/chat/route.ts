@@ -8,8 +8,14 @@
  * 4. This route parses the stream and forwards sanitization metadata
  */
 
+// BACKEND_INTERNAL_URL is used when running inside Docker so the Next.js
+// server-side proxy can reach the backend via the Docker service name
+// rather than localhost (which would resolve to the frontend container itself).
+// Falls back to NEXT_PUBLIC_SANITIZER_API_URL for local development.
 const BACKEND_URL =
-  process.env.NEXT_PUBLIC_SANITIZER_API_URL || "http://localhost:8003";
+  process.env.BACKEND_INTERNAL_URL ||
+  process.env.NEXT_PUBLIC_SANITIZER_API_URL ||
+  "http://localhost:8003";
 
 interface Message {
   role: string;
@@ -22,19 +28,24 @@ interface ChatRequest {
 
 export async function POST(req: Request) {
   try {
-    const { messages }: ChatRequest = await req.json();
+    const body = await req.json();
+    const { messages } = body as ChatRequest;
 
     console.log(`[Chat] Received ${messages.length} messages`);
 
-    // Forward to Python backend (which handles sanitization + Gemini)
+    // Forward the Bearer token from the browser so the backend can authenticate the user
+    const authHeader = req.headers.get("Authorization") || "";
+
+    // Forward to Python backend (which handles auth, RBAC, sanitization + Gemini)
     const response = await fetch(`${BACKEND_URL}/api/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...(authHeader ? { Authorization: authHeader } : {}),
       },
       body: JSON.stringify({
-        messages: messages,
-        // Don't override security_level - use backend's global setting
+        messages,
+        session_id: body.session_id ?? null,
         stream: true,
       }),
     });

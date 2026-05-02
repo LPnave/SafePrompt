@@ -1542,6 +1542,336 @@ With proper deployment attention to hardware resources and GPU acceleration, tho
 
 ---
 
+---
+
+# Part 6: Enterprise Pipeline (v2.0)
+
+## Overview
+
+Version 2.0 transforms SecureMCP Agent-UI from a single-user prototype into a production-ready enterprise system. It adds authentication, role-based access control (RBAC), persistent audit logging, and an admin panel with reporting dashboard — all built on top of the existing ML security pipeline.
+
+## New Architecture
+
+```
+Browser → Next.js (port 3000) → FastAPI (port 8003)
+                                    │
+                       ┌────────────▼────────────────────────────────┐
+                       │  Auth Middleware (JWT verification)          │
+                       │  ↓                                           │
+                       │  Rate Limit Check (role policy)             │
+                       │  ↓                                           │
+                       │  Prompt Length Check (role policy)           │
+                       │  ↓                                           │
+                       │  ZeroShotSecurityValidator.validate_for_role │
+                       │  ↓                                           │
+                       │  Gemini API (with role system prompt)        │
+                       │  ↓                                           │
+                       │  StreamingResponse → Browser                 │
+                       │  ↓ (non-blocking)                            │
+                       │  audit_queue.put_nowait(event)               │
+                       └────────────────────────────────────────────-─┘
+                                    │
+                       Background audit_worker (asyncio)
+                                    │
+                              SQLite / PostgreSQL
+                                    │
+                              Admin Reporting API
+```
+
+## Backend Clean Architecture
+
+The backend has been refactored into a three-layer clean architecture:
+
+- **Controllers** (`app/api/controllers/`) — HTTP request/response handling only
+- **Services** (`app/services/`) — Business logic and pipeline orchestration
+- **Repositories** (`app/repositories/`) — Database access via SQLAlchemy async
+
+### New Files
+
+| File | Purpose |
+|---|---|
+| `app/core/database.py` | Async SQLAlchemy engine, `get_db()` dependency |
+| `app/core/auth.py` | JWT creation/verification, password hashing (bcrypt) |
+| `app/core/audit.py` | asyncio Queue + background drain worker |
+| `app/db/models.py` | ORM models: User, Role, RolePolicy, AuditEvent |
+| `app/db/seed.py` | Idempotent seed for default roles and users |
+| `app/repositories/` | BaseRepository, UserRepository, RoleRepository, AuditRepository |
+| `app/services/auth_service.py` | Login, token refresh, `get_current_user` dependency |
+| `app/services/chat_service.py` | Full pipeline orchestration |
+| `app/services/sanitize_service.py` | Standalone sanitization wrapper |
+| `app/services/admin_service.py` | User and role policy CRUD |
+| `app/api/schemas.py` | Pydantic request/response schemas |
+| `app/api/controllers/auth_controller.py` | `/api/auth/*` endpoints |
+| `app/api/controllers/chat_controller.py` | `/api/chat` endpoint |
+| `app/api/controllers/sanitize_controller.py` | `/api/sanitize/*`, `/api/health`, `/api/stats` |
+| `app/api/controllers/admin_controller.py` | `/api/admin/*` endpoints (admin-only) |
+| `app/api/controllers/reporting_controller.py` | `/api/reports/*` endpoints (admin-only) |
+
+## Database Schema
+
+### roles
+| Column | Type | Notes |
+|---|---|---|
+| id | Integer PK | |
+| name | String(50) UNIQUE | engineering, hr, finance, admin |
+| description | String(255) | |
+| is_admin | Boolean | Grants admin panel access |
+
+### role_policies
+| Column | Type | Notes |
+|---|---|---|
+| id | Integer PK | |
+| role_id | FK → roles | one-to-one |
+| security_level | String(10) | low / medium / high |
+| max_prompt_length | Integer | character limit per prompt |
+| max_requests_per_day | Integer | daily quota per user |
+| system_prompt | Text | injected before every Gemini call |
+| allowed_topics | JSON | list of topic strings |
+| blocked_topics | JSON | list of topic strings |
+
+### users
+| Column | Type | Notes |
+|---|---|---|
+| id | Integer PK | |
+| username | String UNIQUE | |
+| email | String UNIQUE | |
+| hashed_password | String | bcrypt |
+| role_id | FK → roles | |
+| department | String | |
+| is_active | Boolean | soft-delete via deactivate |
+
+### audit_events
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID String PK | |
+| timestamp | DateTime | UTC |
+| user_id | FK → users | nullable |
+| user_role | String | denormalised for fast queries |
+| department | String | |
+| session_id | String | groups conversation threads |
+| prompt_hash | String(64) | SHA-256 of original prompt |
+| raw_prompt | Text | only if STORE_RAW_PROMPTS=true |
+| sanitized_prompt | Text | after sanitization |
+| prompt_length | Integer | |
+| threats_detected | JSON | list of threat type strings |
+| sanitization_applied | Boolean | |
+| blocked | Boolean | |
+| block_reason | String | |
+| security_level_used | String | |
+| confidence_score | Float | |
+| processing_time_ms | Float | end-to-end |
+| vetting_time_ms | Float | ML model time |
+| llm_time_ms | Float | Gemini API time |
+| model_used | String | |
+| tokens_used | Integer | response length proxy |
+| action | String | passed / sanitized / blocked |
+
+## Security Level — Thread-Safety Fix
+
+The global mutation bug (overwriting `validator.security_level` per request) is fixed via `validate_for_role(prompt, security_level)` in `security.py`. This method acquires a `threading.Lock`, temporarily applies the role's security level, runs validation, then restores the previous state — making it safe under concurrent requests.
+
+## Audit Logging
+
+The `audit_worker` coroutine drains `audit_queue` in batches of up to 50 events per second. Failed DB writes are retried 3 times with exponential backoff. Permanently failed batches are appended to `audit_fallback.jsonl` to prevent data loss.
+
+## API Endpoints (v2.0)
+
+### Auth
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/auth/login` | Public | Returns access + refresh tokens |
+| POST | `/api/auth/refresh` | Public | Swap refresh for new access token |
+| GET | `/api/auth/me` | Any user | Current user profile |
+| POST | `/api/auth/register` | Admin | Create new user |
+
+### Admin (admin role only)
+| Method | Path | Description |
+|---|---|---|
+| GET/POST | `/api/admin/users` | List / create users |
+| PUT | `/api/admin/users/{id}` | Update role/department/status |
+| DELETE | `/api/admin/users/{id}` | Deactivate user |
+| GET | `/api/admin/roles` | List roles with policies |
+| PUT | `/api/admin/policies/{role_id}` | Update role policy |
+
+### Reports (admin role only)
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/reports/usage` | Prompts per day by role |
+| GET | `/api/reports/threats` | Threat action breakdown |
+| GET | `/api/reports/users` | Per-user activity summary |
+| GET | `/api/reports/blocked` | Recent blocked events |
+
+## Frontend Changes
+
+### New Files
+| File | Purpose |
+|---|---|
+| `app/login/page.tsx` | Login form with dev seed hints |
+| `lib/auth.ts` | Token storage (localStorage + cookie), login/logout |
+| `lib/admin-api.ts` | Typed API client for admin/reporting endpoints |
+| `middleware.ts` | Next.js Edge middleware — redirects to /login if no token |
+| `app/admin/layout.tsx` | Admin panel sidebar layout |
+| `app/admin/page.tsx` | Dashboard with stat cards and charts |
+| `app/admin/users/page.tsx` | User management table + create/edit form |
+| `app/admin/roles/page.tsx` | Role policy editor per role (full rewrite — see v2.1) |
+| `components/admin/TagInput.tsx` | Reusable tag-chip input for topic lists |
+| `app/admin/reports/page.tsx` | Full reporting dashboard with recharts |
+
+### Modified Files
+| File | Change |
+|---|---|
+| `app/assistant.tsx` | Shows username, role badge, department; logout button; admin panel link for admin users; forwards Bearer token with every chat request |
+| `app/api/chat/route.ts` | Forwards `Authorization: Bearer` header from browser to Python backend |
+
+## New Dependencies
+
+### Backend
+- `sqlalchemy[asyncio]` — async ORM
+- `aiosqlite` — SQLite async driver (swap for `asyncpg` for PostgreSQL)
+- `alembic` — DB migrations
+- `python-jose[cryptography]` — JWT
+- `passlib[bcrypt]` — password hashing
+
+### Frontend
+- `recharts` — charts for admin reporting dashboard
+
+## Configuration (new env vars)
+
+```env
+# JWT
+JWT_SECRET=change-this-in-production
+JWT_ALGORITHM=HS256
+JWT_EXPIRY_MINUTES=60
+JWT_REFRESH_EXPIRY_DAYS=7
+
+# Database
+DATABASE_URL=sqlite+aiosqlite:///./securemcp.db
+
+# Privacy
+STORE_RAW_PROMPTS=false
+```
+
+---
+
+## v2.3 — Switched LLM from Google Gemini to Ollama / Llama 3.2 (May 2026)
+
+### Overview
+Replaced the Google Gemini API call with a local [Ollama](https://ollama.com) instance running Llama 3.2. No API key required — the model runs entirely on the local machine.
+
+### Changes
+
+| File | Change |
+|---|---|
+| `app/core/config.py` | Removed `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_API_URL`; added `OLLAMA_BASE_URL` (default `http://localhost:11434`) and `OLLAMA_MODEL` (default `llama3.2`) |
+| `app/services/chat_service.py` | Replaced `_build_gemini_contents` + `_call_gemini` with `_build_ollama_messages` + `_call_ollama`; messages now use OpenAI-compatible format (`role: system/user/assistant`) |
+| `.env` | Updated with `OLLAMA_BASE_URL` and `OLLAMA_MODEL` |
+
+### Prerequisites
+```bash
+# Ollama must be running
+ollama serve
+
+# Model must be pulled once
+ollama pull llama3.2
+```
+
+### Switching model
+Change `OLLAMA_MODEL` in `.env` to any model you have pulled, e.g. `llama3.1:8b`, `mistral`, `gemma3`.
+
+---
+
+## v2.2 — PostgreSQL + Alembic Migrations (May 2026)
+
+### Overview
+Switched the local development database from SQLite to PostgreSQL to match the production Docker setup. Introduced Alembic for proper schema version control — no more dropping the database to pick up model changes.
+
+### Key changes
+
+| File | Change |
+|---|---|
+| `app/db/models.py` | Replaced `sqlalchemy.dialects.sqlite.JSON` with generic `sqlalchemy.JSON` |
+| `.env` | `DATABASE_URL` now points to PostgreSQL (`postgresql+asyncpg://...`). SQLite entry removed. |
+| `app/core/database.py` | `init_db()` renamed to `check_db_connection()` — no longer calls `create_all`. Schema is owned by Alembic. |
+| `alembic.ini` | Alembic configuration; `sqlalchemy.url` is injected from `settings.DATABASE_URL` at runtime |
+| `alembic/env.py` | Async migration env — uses `async_engine_from_config` + `asyncio.run()` |
+| `alembic/script.py.mako` | Template for generated migration files |
+| `alembic/versions/20260501_0001_initial_schema.py` | Initial migration creating all 4 tables with full schema and indexes |
+| `app/main.py` | Runs `alembic upgrade head` automatically on startup via `asyncio.to_thread` |
+| `start.bat` | Runs `python -m alembic upgrade head` explicitly before starting the server; fails with a clear message if Postgres is unreachable |
+
+### How to start the database for local dev
+```powershell
+# Option A — start only the DB container from docker-compose
+docker-compose up db -d
+
+# Option B — local PostgreSQL
+# Create the DB and user once:
+psql -U postgres -c "CREATE USER securemcp WITH PASSWORD 'securemcp_dev_pass';"
+psql -U postgres -c "CREATE DATABASE securemcp OWNER securemcp;"
+```
+
+### How migrations work going forward
+When you change an ORM model, generate a migration automatically:
+```powershell
+# from python-backend/ with venv active
+python -m alembic revision --autogenerate -m "describe your change"
+python -m alembic upgrade head
+```
+Alembic diffs the ORM metadata against the live schema and generates the SQL. The migration file lives in `alembic/versions/` and should be committed to version control.
+
+---
+
+## v2.1 — Expanded Role & Policy Control (April 2026)
+
+### Overview
+Full CRUD control over roles and their policies, plus additional policy dimensions for fine-grained enterprise governance.
+
+### Database changes — `role_policies` table
+Seven new columns added to the `RolePolicy` ORM model:
+
+| Column | Type | Default | Purpose |
+|---|---|---|---|
+| `enforce_topic_restrictions` | `bool` | `false` | Block prompts whose topic falls outside `allowed_topics` |
+| `response_filter_enabled` | `bool` | `false` | Scan LLM output for sensitive content before delivery |
+| `max_conversation_turns` | `int` | `50` | Max messages per session |
+| `session_timeout_minutes` | `int` | `60` | Inactivity auto-logout hint for the frontend |
+| `allow_file_uploads` | `bool` | `false` | Whether role can attach files |
+| `time_restriction_start` | `str?` | `null` | Earliest access time (24-hour HH:MM, UTC) |
+| `time_restriction_end` | `str?` | `null` | Latest access time (24-hour HH:MM, UTC) |
+
+### New API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/admin/roles` | Create role + auto-create default policy |
+| `PUT` | `/api/admin/roles/{role_id}` | Rename / change description / toggle is_admin |
+| `DELETE` | `/api/admin/roles/{role_id}` | Delete role — blocked if users assigned or role is admin |
+| `POST` | `/api/admin/policies/{role_id}` | Idempotent: create default policy for a role that has none |
+
+All existing policy fields are updated via `PUT /api/admin/policies/{role_id}`, which now accepts all 12 fields.
+
+### Pipeline enforcement additions (chat_service.py)
+Two new checks run before vetting:
+
+1. **Time restriction** — `_check_time_restriction(policy)` raises HTTP 403 if the current UTC time falls outside the role's configured window (supports midnight-spanning windows).
+2. **Topic enforcement** — `_check_topic_restrictions(prompt, policy, validator)` uses the BART zero-shot classifier to score the prompt against `allowed_topics`. Raises HTTP 400 if the best matching topic scores below 0.30, when `enforce_topic_restrictions` is enabled.
+
+### New/updated schemas (schemas.py)
+- `CreateRoleRequest` — `name` (slug pattern), `description`, `is_admin`
+- `UpdateRoleRequest` — all optional version of the above
+- `UpdatePolicyRequest` — expanded with all 7 new fields (validated: HH:MM pattern for time fields, range checks for turn/timeout counts)
+- `RolePolicyResponse` — includes all 7 new fields
+
+### Frontend changes
+
+| File | Change |
+|---|---|
+| `lib/admin-api.ts` | Added `roles.create`, `roles.update`, `roles.delete`, `roles.createPolicy`; `RolePolicyRecord` expanded with 6 new fields |
+| `components/admin/TagInput.tsx` | New — dismissible chip input; Enter/comma adds tag, Backspace removes last |
+| `app/admin/roles/page.tsx` | Full rewrite — Add Role form, per-role delete button with confirmation dialog, expanded PolicyEditor with all 12 fields, time-restriction collapsible section, toggle switches for boolean flags, TagInput for topic lists |
+
+---
+
 **End of Documentation**
 
 *This documentation covers SecureMCP version 1.0 as of November 19, 2025. The most recent enhancements focus on improving PII detection sensitivity through adaptive thresholds and expanding context-awareness to include configuration-related discussions, significantly reducing false positives for development workflows. The system now achieves approximately 90-91% overall detection accuracy with excellent balance between security and usability, with PII detection expected to improve toward 70-75% through the adaptive threshold enhancements. For the latest updates, implementation examples, and community support, please visit the project repository.*

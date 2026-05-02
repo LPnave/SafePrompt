@@ -5,6 +5,7 @@ Extracted and adapted from zeroshot_secure_mcp.py
 
 import math
 import re
+import threading
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from collections import Counter
@@ -18,6 +19,9 @@ from app.core.config import SecurityLevel
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+# Protects mutation of the shared validator instance during per-role validation
+_validation_lock = threading.Lock()
 
 
 @dataclass
@@ -1622,3 +1626,35 @@ class ZeroShotSecurityValidator:
             adjusted_confidence = base_confidence
         
         return max(0.0, min(1.0, adjusted_confidence))
+
+    def validate_for_role(self, prompt: str, security_level: str) -> "ValidationResult":
+        """
+        Thread-safe validation using a temporary security level.
+
+        Instead of mutating the global validator state (which causes race conditions
+        under concurrent requests), this method acquires a lock, temporarily applies
+        the requested security level, runs validation, then restores the original state.
+
+        Use this instead of calling validate_prompt() directly when the security level
+        is determined per-user/per-role rather than globally.
+        """
+        with _validation_lock:
+            old_level = self.security_level
+            old_block_mode = self.block_mode
+            old_detection = self.detection_threshold
+            old_blocking = self.blocking_threshold
+            old_entropy = self.entropy_threshold
+            old_fallback = self.credential_fallback_threshold
+
+            try:
+                self.security_level = SecurityLevel(security_level.lower())
+                self._configure_security_thresholds()
+                return self.validate_prompt(prompt)
+            finally:
+                # Always restore previous state even if validate_prompt raises
+                self.security_level = old_level
+                self.block_mode = old_block_mode
+                self.detection_threshold = old_detection
+                self.blocking_threshold = old_blocking
+                self.entropy_threshold = old_entropy
+                self.credential_fallback_threshold = old_fallback
