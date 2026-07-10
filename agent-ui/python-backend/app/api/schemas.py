@@ -44,6 +44,15 @@ class UserProfileResponse(BaseModel):
     department: Optional[str]
     is_admin: bool
     is_active: bool
+    allow_file_uploads: bool = False
+    time_restriction_start: Optional[str] = None
+    time_restriction_end: Optional[str] = None
+    session_timeout_minutes: int = 60
+    max_conversation_turns: int = 50
+    security_level: str = "medium"
+    max_prompt_length: int = 4000
+    max_requests_per_day: int = 100
+    requests_today: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -51,8 +60,10 @@ class UserProfileResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class SanitizeRequest(BaseModel):
-    prompt: str = Field(..., min_length=1)
-    security_level: Optional[str] = Field(None, description="Override: low, medium, high")
+    prompt: str = ""
+    session_id: Optional[str] = Field(None, description="Conversation session id for turn-limit checks")
+    has_attachments: bool = False
+    security_level: Optional[str] = Field(None, description="Admin override: low, medium, high")
     return_details: bool = False
 
 
@@ -66,11 +77,14 @@ class SanitizeResponse(BaseModel):
     modifications_made: bool
     sanitization_details: Optional[Dict] = None
     processing_time_ms: float
+    preflight_token: Optional[str] = None
 
 
 class BatchSanitizeRequest(BaseModel):
     prompts: List[str]
-    security_level: Optional[str] = None
+    session_id: Optional[str] = None
+    has_attachments: bool = False
+    security_level: Optional[str] = Field(None, description="Admin override: low, medium, high")
     return_details: bool = False
 
 
@@ -94,6 +108,7 @@ class ChatRequest(BaseModel):
     model_config = {"extra": "allow"}
     messages: List[ChatMessage]
     session_id: Optional[str] = None
+    preflight_token: Optional[str] = None
     stream: Optional[bool] = False
 
 
@@ -253,3 +268,72 @@ class BlockedEventResponse(BaseModel):
     block_reason: Optional[str]
     threats_detected: Optional[List[str]]
     security_level_used: Optional[str]
+
+
+# ---------------------------------------------------------------------------
+# Chat threads & messages
+# ---------------------------------------------------------------------------
+
+class CreateThreadRequest(BaseModel):
+    id: Optional[str] = Field(None, description="Client-generated thread UUID")
+    title: Optional[str] = Field(None, max_length=255)
+
+
+class ThreadInitializeResponse(BaseModel):
+    remoteId: str
+    externalId: Optional[str] = None
+    title: str
+
+
+class ThreadSummary(BaseModel):
+    remoteId: str
+    title: Optional[str]
+    status: str
+    updated_at: datetime
+    message_count: int = 0
+
+
+class ThreadDetail(BaseModel):
+    id: str
+    title: Optional[str]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class UpdateThreadRequest(BaseModel):
+    title: Optional[str] = Field(None, max_length=255)
+    status: Optional[str] = Field(None, pattern=r"^(active|archived)$")
+
+
+class MessageRecord(BaseModel):
+    id: str
+    role: str
+    content: str
+    parent_id: Optional[str]
+    created_at: datetime
+
+
+class AppendMessageRequest(BaseModel):
+    message: Dict[str, Any]
+    parentId: Optional[str] = None
+
+
+class MessageRepositoryResponse(BaseModel):
+    headId: Optional[str] = None
+    messages: List[Dict[str, Any]]
+
+
+class AdminThreadSummary(BaseModel):
+    id: str
+    title: Optional[str]
+    status: str
+    user_id: int
+    username: str
+    message_count: int
+    updated_at: datetime
+
+
+class AdminThreadListResponse(BaseModel):
+    threads: List[AdminThreadSummary]
+    total: int

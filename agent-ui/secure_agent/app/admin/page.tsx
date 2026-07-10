@@ -32,33 +32,52 @@ function StatCard({
   href?: string;
 }) {
   const inner = (
-    <div className="rounded-xl border bg-card p-5 space-y-3 hover:shadow-sm transition">
+    <div className="flex h-full min-h-[9.5rem] flex-col rounded-xl border bg-card p-5 hover:shadow-sm transition">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{label}</p>
         <Icon className="w-4 h-4 text-muted-foreground" />
       </div>
-      <p className="text-3xl font-semibold">{value}</p>
-      {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
+      <p className="mt-3 text-3xl font-semibold">{value}</p>
+      <p
+        className={`mt-1 min-h-4 text-xs text-muted-foreground ${sub ? "" : "invisible"}`}
+        aria-hidden={!sub}
+      >
+        {sub ?? "\u00a0"}
+      </p>
       {href && (
-        <div className="flex items-center gap-1 text-xs text-primary">
+        <div className="mt-auto flex items-center gap-1 pt-3 text-xs text-primary">
           View details <ArrowRight className="w-3 h-3" />
         </div>
       )}
     </div>
   );
-  return href ? <Link href={href}>{inner}</Link> : inner;
+  return href ? (
+    <Link href={href} className="block h-full">
+      {inner}
+    </Link>
+  ) : (
+    inner
+  );
 }
 
 export default function AdminDashboard() {
   const [usage, setUsage] = useState<UsageSummaryItem[]>([]);
   const [threats, setThreats] = useState<ThreatBreakdownItem[]>([]);
+  const [userCount, setUserCount] = useState<number | null>(null);
+  const [activeUserCount, setActiveUserCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([adminApi.reports.usage(), adminApi.reports.threats()])
-      .then(([u, t]) => {
+    Promise.all([
+      adminApi.reports.usage(),
+      adminApi.reports.threats(),
+      adminApi.users.list(),
+    ])
+      .then(([u, t, users]) => {
         setUsage(u);
         setThreats(t);
+        setUserCount(users.length);
+        setActiveUserCount(users.filter((user) => user.is_active).length);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -104,7 +123,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 items-stretch gap-4 lg:grid-cols-4">
         <StatCard label="Total Prompts" value={totalPrompts} icon={Activity} href="/admin/reports" />
         <StatCard
           label="Blocked"
@@ -114,7 +133,17 @@ export default function AdminDashboard() {
           href="/admin/reports"
         />
         <StatCard label="Sanitized" value={totalSanitized} icon={ShieldCheck} href="/admin/reports" />
-        <StatCard label="Manage Users" value="" icon={Users} href="/admin/users" />
+        <StatCard
+          label="Manage Users"
+          value={loading ? "—" : (userCount ?? 0)}
+          icon={Users}
+          sub={
+            !loading && userCount !== null && activeUserCount !== null
+              ? `${activeUserCount} active`
+              : undefined
+          }
+          href="/admin/users"
+        />
       </div>
 
       {/* Charts */}

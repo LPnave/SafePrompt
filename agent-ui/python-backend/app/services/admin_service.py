@@ -9,6 +9,7 @@ from app.core.auth import hash_password
 from app.db.models import User, Role, RolePolicy
 from app.repositories.user_repository import UserRepository
 from app.repositories.role_repository import RoleRepository, RolePolicyRepository
+from app.services.policy_service import validate_time_restriction_fields
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -96,6 +97,11 @@ async def update_role_policy(role_id: int, updates: dict, db: AsyncSession) -> R
     for key, value in updates.items():
         if key in allowed:
             setattr(policy, key, value)
+
+    validate_time_restriction_fields(
+        policy.time_restriction_start,
+        policy.time_restriction_end,
+    )
 
     return await policy_repo.update(policy)
 

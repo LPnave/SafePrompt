@@ -5,7 +5,7 @@ Audit repository — read-side queries on audit_events for reporting.
 from datetime import datetime, date
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, cast, Date, Integer
+from sqlalchemy import select, func, and_
 
 from app.db.models import AuditEvent
 from app.repositories.base_repository import BaseRepository
@@ -16,13 +16,42 @@ class AuditRepository(BaseRepository[AuditEvent]):
         super().__init__(AuditEvent, db)
 
     async def count_today_for_user(self, user_id: int) -> int:
-        # Pass a Python date object — SQLAlchemy binds it as DATE, not VARCHAR
+        """Count all audit events today (reporting)."""
         today = date.today()
+        today_str = today.isoformat()
         result = await self.db.execute(
             select(func.count(AuditEvent.id)).where(
                 and_(
                     AuditEvent.user_id == user_id,
-                    cast(AuditEvent.timestamp, Date) == today,
+                    func.date(AuditEvent.timestamp) == today_str,
+                )
+            )
+        )
+        return result.scalar_one() or 0
+
+    async def count_today_requests_for_user(self, user_id: int) -> int:
+        """Count billable requests today (passed or sanitized only)."""
+        today = date.today()
+        today_str = today.isoformat()
+        result = await self.db.execute(
+            select(func.count(AuditEvent.id)).where(
+                and_(
+                    AuditEvent.user_id == user_id,
+                    func.date(AuditEvent.timestamp) == today_str,
+                    AuditEvent.action.in_(("passed", "sanitized")),
+                )
+            )
+        )
+        return result.scalar_one() or 0
+
+    async def count_session_turns_for_user(self, user_id: int, session_id: str) -> int:
+        """Count completed user turns (passed or sanitized) in a conversation session."""
+        result = await self.db.execute(
+            select(func.count(AuditEvent.id)).where(
+                and_(
+                    AuditEvent.user_id == user_id,
+                    AuditEvent.session_id == session_id,
+                    AuditEvent.action.in_(("passed", "sanitized")),
                 )
             )
         )
@@ -34,7 +63,7 @@ class AuditRepository(BaseRepository[AuditEvent]):
         end: Optional[datetime] = None,
     ) -> list[dict]:
         """Prompts per day grouped by role."""
-        day_col = cast(AuditEvent.timestamp, Date)
+        day_col = func.date(AuditEvent.timestamp)
         query = select(
             day_col.label("day"),
             AuditEvent.user_role,

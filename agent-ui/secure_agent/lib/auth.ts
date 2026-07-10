@@ -21,6 +21,15 @@ export interface AuthUser {
   role: string;
   department: string | null;
   is_admin: boolean;
+  allow_file_uploads?: boolean;
+  time_restriction_start?: string | null;
+  time_restriction_end?: string | null;
+  session_timeout_minutes?: number;
+  max_conversation_turns?: number;
+  security_level?: "low" | "medium" | "high";
+  max_prompt_length?: number;
+  max_requests_per_day?: number;
+  requests_today?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +57,7 @@ export function saveTokens(accessToken: string, refreshToken: string, user: Auth
   localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
   // Set cookie so the middleware can gate routes without JS
-  setCookie(COOKIE_NAME, accessToken, 1); // 1 day (matches JWT expiry)
+  setCookie(COOKIE_NAME, accessToken, 1); // 1 day (matches 24h JWT expiry)
 }
 
 export function clearTokens() {
@@ -73,6 +82,11 @@ export function getUser(): AuthUser | null {
   } catch {
     return null;
   }
+}
+
+export function updateStoredUser(user: AuthUser) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export function isAuthenticated(): boolean {
@@ -102,7 +116,22 @@ export async function login(username: string, password: string): Promise<AuthUse
 }
 
 export function logout() {
+  void invalidateSessionOnServer();
   clearTokens();
+}
+
+export async function invalidateSessionOnServer(): Promise<void> {
+  if (typeof window === "undefined") return;
+  const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+  if (!token) return;
+  try {
+    await fetch(`${BACKEND_URL}/api/auth/invalidate-session`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    // Best-effort server invalidation
+  }
 }
 
 export async function refreshIfExpired(): Promise<boolean> {

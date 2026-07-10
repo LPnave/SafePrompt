@@ -46,6 +46,7 @@ export async function POST(req: Request) {
       body: JSON.stringify({
         messages,
         session_id: body.session_id ?? null,
+        preflight_token: body.preflight_token ?? null,
         stream: true,
       }),
     });
@@ -126,20 +127,21 @@ export async function POST(req: Request) {
               const data = line.substring(colonIndex + 1);
 
               if (code === "8") {
-                // Sanitization metadata - just log it, don't display to avoid [object Object] issue
                 try {
                   const metadata = JSON.parse(data);
-                  sanitizationData = metadata[0]; // Get first item from array
-                  console.log(
-                    "[Chat Proxy] Sanitization applied:",
-                    sanitizationData,
-                  );
-
-                  // Don't send as annotation to avoid [object Object] display issue
-                  // The sanitization already happened, user doesn't need to see internal metadata
+                  const item = metadata[0];
+                  if (item?.type === "response_filtered") {
+                    controller.enqueue(
+                      encoder.encode(
+                        `0:${JSON.stringify("\n\n_(Response redacted per security policy.)_\n\n")}\n`,
+                      ),
+                    );
+                  } else if (item?.type === "sanitization") {
+                    console.log("[Chat Proxy] Sanitization applied:", item);
+                  }
                 } catch (e) {
                   console.error(
-                    "[Chat Proxy] Failed to parse sanitization metadata:",
+                    "[Chat Proxy] Failed to parse metadata:",
                     e,
                   );
                 }

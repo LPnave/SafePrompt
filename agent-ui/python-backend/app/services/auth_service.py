@@ -15,11 +15,35 @@ from app.core.database import get_db
 from app.db.models import User, Role, RolePolicy
 from app.repositories.user_repository import UserRepository
 from app.repositories.role_repository import RoleRepository
+from app.repositories.audit_repository import AuditRepository
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+def build_user_profile(user: User, requests_today: int | None = None) -> dict:
+    """Serialize user + role policy flags for the frontend."""
+    policy = user.role.policy if user.role else None
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "role": user.role.name,
+        "department": user.department,
+        "is_admin": user.role.is_admin,
+        "is_active": user.is_active,
+        "allow_file_uploads": bool(policy.allow_file_uploads) if policy else False,
+        "time_restriction_start": policy.time_restriction_start if policy else None,
+        "time_restriction_end": policy.time_restriction_end if policy else None,
+        "session_timeout_minutes": policy.session_timeout_minutes if policy else 60,
+        "max_conversation_turns": policy.max_conversation_turns if policy else 50,
+        "security_level": policy.security_level if policy else "medium",
+        "max_prompt_length": policy.max_prompt_length if policy else 4000,
+        "max_requests_per_day": policy.max_requests_per_day if policy else 100,
+        "requests_today": requests_today if requests_today is not None else 0,
+    }
 
 
 async def login(username: str, password: str, db: AsyncSession) -> dict:
@@ -43,6 +67,7 @@ async def login(username: str, password: str, db: AsyncSession) -> dict:
         username=user.username,
         role=user.role.name,
         is_admin=user.role.is_admin,
+        token_version=getattr(user, "token_version", 0),
     )
     refresh_token = create_refresh_token(user_id=user.id)
 
@@ -52,14 +77,7 @@ async def login(username: str, password: str, db: AsyncSession) -> dict:
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "role": user.role.name,
-            "department": user.department,
-            "is_admin": user.role.is_admin,
-        },
+        "user": build_user_profile(user),
     }
 
 
@@ -78,6 +96,7 @@ async def refresh_access_token(refresh_token: str, db: AsyncSession) -> dict:
         username=user.username,
         role=user.role.name,
         is_admin=user.role.is_admin,
+        token_version=getattr(user, "token_version", 0),
     )
     return {"access_token": new_access_token, "token_type": "bearer"}
 
@@ -132,6 +151,13 @@ async def get_current_user(
             detail="User not found or inactive",
         )
 
+    token_version = getattr(user, "token_version", 0)
+    if payload.get("tv", 0) != token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired",
+        )
+
     policy = user.role.policy if user.role else None
     if policy is None:
         raise HTTPException(
@@ -140,6 +166,14 @@ async def get_current_user(
         )
 
     return user, policy
+
+
+async def invalidate_user_session(user: User, db: AsyncSession) -> None:
+    """Bump token_version so existing access tokens are rejected."""
+    user_repo = UserRepository(db)
+    user.token_version = getattr(user, "token_version", 0) + 1
+    await user_repo.update(user)
+    logger.info("Session invalidated for user: %s (tv=%d)", user.username, user.token_version)
 
 
 async def require_admin(

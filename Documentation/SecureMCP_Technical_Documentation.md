@@ -1711,7 +1711,7 @@ The `audit_worker` coroutine drains `audit_queue` in batches of up to 50 events 
 | `lib/admin-api.ts` | Typed API client for admin/reporting endpoints |
 | `middleware.ts` | Next.js Edge middleware — redirects to /login if no token |
 | `app/admin/layout.tsx` | Admin panel sidebar layout |
-| `app/admin/page.tsx` | Dashboard with stat cards and charts |
+| `app/admin/page.tsx` | Dashboard with stat cards (incl. user count from `/api/admin/users`) and charts |
 | `app/admin/users/page.tsx` | User management table + create/edit form |
 | `app/admin/roles/page.tsx` | Role policy editor per role (full rewrite — see v2.1) |
 | `components/admin/TagInput.tsx` | Reusable tag-chip input for topic lists |
@@ -1741,7 +1741,7 @@ The `audit_worker` coroutine drains `audit_queue` in batches of up to 50 events 
 # JWT
 JWT_SECRET=change-this-in-production
 JWT_ALGORITHM=HS256
-JWT_EXPIRY_MINUTES=60
+JWT_EXPIRY_MINUTES=1440
 JWT_REFRESH_EXPIRY_DAYS=7
 
 # Database
@@ -1869,6 +1869,256 @@ Two new checks run before vetting:
 | `lib/admin-api.ts` | Added `roles.create`, `roles.update`, `roles.delete`, `roles.createPolicy`; `RolePolicyRecord` expanded with 6 new fields |
 | `components/admin/TagInput.tsx` | New — dismissible chip input; Enter/comma adds tag, Backspace removes last |
 | `app/admin/roles/page.tsx` | Full rewrite — Add Role form, per-role delete button with confirmation dialog, expanded PolicyEditor with all 12 fields, time-restriction collapsible section, toggle switches for boolean flags, TagInput for topic lists |
+
+---
+
+## v2.5 — Time-of-Day Restrictions + Session Limits (July 2026)
+
+### Overview
+Completed end-to-end enforcement for time-of-day restrictions and the related session policy fields (`max_conversation_turns`, `session_timeout_minutes`). `response_filter_enabled` remains future work.
+
+### Backend changes
+
+| File | Change |
+|---|---|
+| `app/services/policy_service.py` | **New** — shared `check_time_restriction`, `is_within_time_window`, `validate_time_restriction_fields`, topic/file/length checks |
+| `app/services/chat_service.py` | Imports policy checks; audits time/turn blocks; enforces `max_conversation_turns` via `session_id` |
+| `app/repositories/audit_repository.py` | Added `count_session_turns_for_user()` |
+| `app/api/controllers/sanitize_controller.py` | Applies `check_time_restriction` on sanitize endpoints |
+| `app/services/admin_service.py` | Validates time fields on policy save (both required, must differ) |
+| `app/services/auth_service.py` | `build_user_profile()` exposes time window, session timeout, max turns |
+| `app/api/schemas.py` | `UserProfileResponse` extended with policy fields |
+| `test_time_restrictions.py` | **New** — unit tests for window logic |
+
+### Frontend changes
+
+| File | Change |
+|---|---|
+| `lib/policy-utils.ts` | **New** — `isWithinTimeWindow`, `formatTimeWindowLocal` |
+| `hooks/use-session-timeout.ts` | **New** — idle tracking, 2-min warning, auto-logout |
+| `lib/auth.ts` | `AuthUser` includes policy fields |
+| `app/assistant.tsx` | Profile refresh, chat-allowed state, session timeout hook, `session_id` via runtime body ref |
+| `components/assistant-ui/thread.tsx` | Time banner, disabled composer, sanitize auth header, `threadId` → `session_id` |
+| `app/admin/roles/page.tsx` | UTC labels, local preview, client validation |
+| `app/login/page.tsx` | Session-expired message on `?reason=session_expired` |
+
+### Behaviour
+- Times are stored and enforced as **UTC `HH:MM`** (inclusive boundaries; midnight wrap supported).
+- Outside the window: composer disabled + banner; `/api/sanitize` and `/api/chat` return 403.
+- `session_id` is the assistant-ui `threadId`, used to count conversation turns against `max_conversation_turns`.
+- `session_timeout_minutes` triggers frontend idle logout (warning 2 minutes before).
+- `response_filter_enabled` is **not** enforced yet.
+
+---
+
+## v2.7 — Policy Gaps Remediation (July 2026)
+
+### Overview
+Closed the seven remaining policy enforcement gaps: response filtering, server-side session invalidation, sanitize attachment checks, preflight deduplication, composer limit UX, accurate daily quota counting, and full audit coverage for policy blocks.
+
+### Backend changes
+
+| File | Change |
+|---|---|
+| `app/repositories/audit_repository.py` | `count_today_requests_for_user()` counts only `passed`/`sanitized` events |
+| `app/services/policy_service.py` | `block_reason_from_http_detail()`, `cached_result` skip in `enforce_prompt_policy()` |
+| `app/services/chat_service.py` | Preflight token consume, response filter after Ollama, audit all 400 policy blocks |
+| `app/services/preflight_cache.py` | **New** — 120s TTL cache for sanitize→chat validator dedup |
+| `app/services/response_filter_service.py` | **New** — redact LLM output when `response_filter_enabled` |
+| `app/services/sanitize_service.py` | `has_attachments` check; issues `preflight_token` |
+| `app/services/auth_service.py` | JWT `tv` claim; `invalidate_user_session()`; profile quota fields |
+| `app/api/controllers/auth_controller.py` | `POST /api/auth/invalidate-session`; `/api/auth/me` returns quota fields |
+| `app/db/models.py` | `users.token_version` |
+| `alembic/versions/20260710_0002_user_token_version.py` | **New** migration |
+| `test_sanitize_policy.py`, `test_response_filter.py` | Extended / new unit tests |
+
+### Frontend changes
+
+| File | Change |
+|---|---|
+| `lib/auth.ts` | Quota fields; `invalidateSessionOnServer()` on logout |
+| `hooks/use-session-timeout.ts` | Server invalidation before idle redirect |
+| `app/assistant.tsx` | `preflight_token` in runtime body; pass limit props to Thread |
+| `components/assistant-ui/thread.tsx` | Char/quota counters; `has_attachments` + `preflight_token` on sanitize |
+| `app/api/chat/route.ts` | Forwards `preflight_token`; response-filter notice in stream |
+
+### Behaviour summary
+
+| Gap | Resolution |
+|---|---|
+| Daily quota over-counting | Only successful (`passed`/`sanitized`) turns count toward `max_requests_per_day` |
+| Missing audits on 400 blocks | `file_upload_denied`, `prompt_length_exceeded`, `topic_restriction` audited |
+| No composer limit UX | Char counter + daily quota shown; send disabled at limits |
+| Sanitize ignores attachments | `has_attachments` triggers early `check_file_uploads` |
+| Duplicate validator runs | `preflight_token` skips re-validation in chat (time/rate/turn still enforced) |
+| Client-only session timeout | `token_version` bumped on invalidate; JWT rejected server-side |
+| `response_filter_enabled` | LLM output redacted via `validate_for_role`; `action=response_filtered` in audit |
+
+### Bugfix (SQLite reporting)
+- `get_usage_summary()` and daily count queries used `cast(timestamp, Date)` which crashes on SQLite (`TypeError: fromisoformat`). Replaced with `func.date(timestamp)` for admin dashboard `/api/reports/usage`.
+- Admin/report API calls now proxy through Next.js rewrites (`/api/reports/*`, `/api/admin/*`) to avoid browser CORS failures.
+
+---
+
+## v2.6 — Sanitize + Role Policy Alignment (July 2026)
+
+### Overview
+Unified `/api/sanitize` with the chat pipeline so both paths enforce the same role-policy preflight. Fixed Settings dialog confusion between global validator level and per-role security policy.
+
+### Backend changes
+
+| File | Change |
+|---|---|
+| `app/services/policy_service.py` | Added `enforce_prompt_policy()`, `check_rate_limit()`, `check_conversation_turns()`, `PromptPolicyBlocked` |
+| `app/services/chat_service.py` | Refactored `run_chat_pipeline()` to call shared `enforce_prompt_policy()` |
+| `app/services/sanitize_service.py` | Replaced global-only validation with `sanitize_single_with_policy()` / `sanitize_batch_with_policy()` |
+| `app/api/controllers/sanitize_controller.py` | Injects `AuditRepository`; full policy preflight; rejects `security_level` override for non-admins |
+| `app/api/schemas.py` | `SanitizeRequest` / `BatchSanitizeRequest` add `session_id`; `UserProfileResponse` adds `security_level` |
+| `app/services/auth_service.py` | `build_user_profile()` exposes `security_level` |
+| `test_sanitize_policy.py` | **New** — unit tests for shared preflight |
+
+### Frontend changes
+
+| File | Change |
+|---|---|
+| `components/assistant-ui/thread.tsx` | Passes `session_id` in sanitize POST body |
+| `app/assistant.tsx` | Settings gear admin-only; read-only `Policy: {level}` badge for all users |
+| `components/SettingsDialog.tsx` | Clarifies global default vs per-role policy |
+| `components/SecurityLevelSelector.tsx` | Updated note about role policy precedence |
+| `lib/auth.ts` | `AuthUser` includes `security_level` |
+
+### Sanitize vs chat parity
+
+| Policy check | `/api/sanitize` | `/api/chat` |
+|---|---|---|
+| Time restriction | Yes | Yes |
+| Max prompt length | Yes | Yes |
+| Blocked keywords / topic restrictions | Yes | Yes |
+| Role `security_level` validation | Yes | Yes |
+| Validator block (`block_mode`) | Yes (HTTP 400) | Yes (HTTP 400) |
+| Max requests / day | Yes (pre-check) | Yes (audit on block) |
+| Max conversation turns | Yes (with `session_id`) | Yes |
+| File uploads | No (text-only API) | Yes |
+| LLM call | No | Yes |
+| Audit logging | No | Yes |
+
+### Behaviour
+- Authenticated sanitize always uses `policy.security_level`, not the global validator default.
+- Non-admins cannot pass `security_level` override on sanitize requests.
+- Global security level (Settings gear, admin-only) remains a server fallback; per-role policies take precedence for authenticated chat and sanitize.
+- `response_filter_enabled` remains **not** enforced.
+
+### Bugfix (time restriction toggle)
+- Admin policy save used `model_dump(exclude_none=True)`, which dropped explicit `null` values for `time_restriction_start` / `time_restriction_end` — turning the toggle off did not clear restrictions in the DB. Fixed to `exclude_unset=True` on `PUT /api/admin/policies/{role_id}`.
+- Chat page now refreshes `/api/auth/me` on window focus so policy changes apply without re-login.
+
+---
+
+## v2.4 — File Upload Support (July 2026)
+
+### Overview
+Wired the existing `allow_file_uploads` role-policy flag end-to-end so admins can enable per-role file attachments in the chat composer.
+
+### Backend changes
+
+| File | Change |
+|---|---|
+| `app/api/schemas.py` | `UserProfileResponse` now includes `allow_file_uploads` |
+| `app/services/auth_service.py` | Added `build_user_profile()`; login response includes `allow_file_uploads` |
+| `app/api/controllers/auth_controller.py` | `/api/auth/me` returns `allow_file_uploads` from role policy |
+| `app/services/chat_service.py` | Added `_has_attachments()`, `_extract_images()`, `_check_file_uploads()`; Ollama messages include `images` array for vision models |
+
+### Frontend changes
+
+| File | Change |
+|---|---|
+| `lib/auth.ts` | `AuthUser` includes `allow_file_uploads`; added `updateStoredUser()` |
+| `app/assistant.tsx` | Configures `CompositeAttachmentAdapter` when uploads are allowed; refreshes profile from `/api/auth/me` on load |
+| `components/assistant-ui/thread.tsx` | Shows `+` attachment button only when `allowFileUploads` is true; `composer.send()` now preserves attachments after text sanitization |
+
+### Behaviour
+- **Admin → Roles → Allow file uploads** must be enabled for the user's role.
+- Supported attachment types: images (`image/*`) and text files (`.txt`, `.md`, `.csv`, `.json`, etc.).
+- Images are forwarded to Ollama via the `images` field (requires a vision-capable model, e.g. `llama3.2-vision`).
+- Text files are inlined as `<attachment>` blocks in the prompt text.
+- Users without the flag see no attachment button and receive HTTP 400 if attachments are sent anyway.
+
+### After enabling for a role
+Users must **re-login** or reload the chat page (profile is refreshed from `/api/auth/me`) for the `+` button to appear.
+
+---
+
+## v2.8 — Chat History & Persistence
+
+Adds durable server-side chat history with assistant-ui persistence adapters, user thread APIs, and admin read-only browsing. Stores **sanitized user messages** and **assistant responses** only (not raw pre-sanitization prompts).
+
+### Database schema
+
+| Table | Purpose |
+|---|---|
+| `chat_threads` | Per-user thread metadata (`id` = client `threadId` / `session_id`) |
+| `chat_messages` | Sanitized user + assistant message rows per thread |
+
+Indexes: `(user_id, updated_at)` on threads; `(thread_id, created_at)` on messages.
+
+### Backend changes
+
+| File | Change |
+|---|---|
+| `app/db/models.py` | `ChatThread`, `ChatMessage` models |
+| `alembic/versions/20260710_0003_chat_history.py` | Migration for new tables |
+| `app/repositories/thread_repository.py` | Thread CRUD + admin list |
+| `app/repositories/message_repository.py` | Message append/list + turn counting |
+| `app/services/thread_service.py` | `ensure_thread`, `append_turn`, DTO mapping |
+| `app/api/controllers/threads_controller.py` | User thread/message APIs |
+| `app/api/controllers/admin_controller.py` | Admin read-only thread/message APIs |
+| `app/services/chat_service.py` | Persists completed turns after successful LLM response |
+| `app/services/policy_service.py` | Turn limits prefer `chat_messages` count; audit fallback |
+
+### API endpoints
+
+**User (authenticated)**
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/threads` | List user's threads |
+| POST | `/api/threads` | Create/initialize thread |
+| GET/PATCH/DELETE | `/api/threads/{id}` | Thread metadata lifecycle |
+| GET | `/api/threads/{id}/messages` | Load message history |
+| POST | `/api/threads/{id}/messages` | Append message (adapter; backend is source of truth on chat) |
+
+**Admin (`require_admin`)**
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/admin/threads` | List threads (`user_id`, `username` filters) |
+| GET | `/api/admin/threads/{id}/messages` | Read any thread transcript |
+
+### Frontend changes
+
+| File | Change |
+|---|---|
+| `lib/thread-persistence.tsx` | `RemoteThreadListAdapter` + `ThreadHistoryAdapter` (load from server) |
+| `lib/use-data-stream-thread-runtime.ts` | Per-thread data stream hook (`useLocalThreadRuntime`); avoids nesting `useRemoteThreadListRuntime` inside the outer remote thread list |
+| `app/assistant.tsx` | `unstable_useRemoteThreadListRuntime` with `useDataStreamThreadRuntime` in `runtimeHook` |
+| `components/assistant-ui/thread.tsx` | Uses `remoteId` for `session_id` in sanitize/chat; composer disabled + send spinner while sanitizing/streaming |
+| `next.config.ts` | Proxies `/api/threads/*` to Python backend |
+| `app/admin/chat-history/page.tsx` | Admin read-only transcript browser |
+| `lib/admin-api.ts` | `threads.list()` / `threads.messages()` |
+
+### Behaviour
+
+- Threads and messages **persist across page refresh** and re-login.
+- `session_id` remains the persisted `thread.id` for turn limits and audit correlation.
+- Blocked prompts are **not** stored in `chat_messages`.
+- Loaded messages include assistant-ui `metadata` defaults (`unstable_state`, `attachments`, etc.) so history restore does not crash on `metadata.unstable_state`.
+- Turn counting uses `chat_messages` (`role='user'`) when available; falls back to `audit_events` for legacy sessions.
+- Admin **Chat History** nav item provides compliance read access without edit/delete.
+- History starts from implementation date — no backfill of pre-v2.8 conversations.
+
+### Runtime wiring note
+
+`unstable_useRemoteThreadListRuntime` requires a **per-thread** inner runtime hook. Do **not** use `useDataStreamRuntime` inside `runtimeHook` — it calls `useLocalRuntime`, which nests another remote thread list and leaves the main thread on `EMPTY_THREAD_CORE` (`capabilities.reload === false`), causing an infinite "Loading chat…" state. Use `useDataStreamThreadRuntime` (`useLocalThreadRuntime` + data-stream adapter) instead.
 
 ---
 

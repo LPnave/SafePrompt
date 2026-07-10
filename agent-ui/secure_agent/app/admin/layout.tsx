@@ -10,12 +10,14 @@ import {
   Shield,
   BarChart3,
   ArrowLeft,
+  MessagesSquare,
 } from "lucide-react";
 
 const NAV = [
   { href: "/admin", label: "Dashboard", icon: LayoutDashboard, exact: true },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/roles", label: "Roles & Policies", icon: Shield },
+  { href: "/admin/chat-history", label: "Chat History", icon: MessagesSquare },
   { href: "/admin/reports", label: "Reports", icon: BarChart3 },
 ];
 

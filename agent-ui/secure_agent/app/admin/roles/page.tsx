@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { adminApi, RoleRecord, RolePolicyRecord } from "@/lib/admin-api";
 import TagInput from "@/components/admin/TagInput";
+import { formatTimeWindowLocal } from "@/lib/policy-utils";
 
 interface PolicyDraft extends Partial<RolePolicyRecord> {}
 
@@ -70,7 +71,7 @@ function PolicyEditor({
   saving,
 }: {
   policy: RolePolicyRecord;
-  onSave: (draft: PolicyDraft) => void;
+  onSave: (draft: PolicyDraft) => Promise<void>;
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<PolicyDraft>({ ...policy });
@@ -82,15 +83,34 @@ function PolicyEditor({
     setDraft((d) => ({ ...d, [key]: value }));
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (saving) return;
     const payload: PolicyDraft = { ...draft };
     if (!timeEnabled) {
       payload.time_restriction_start = null;
       payload.time_restriction_end = null;
+    } else if (!payload.time_restriction_start || !payload.time_restriction_end) {
+      return;
+    } else if (payload.time_restriction_start === payload.time_restriction_end) {
+      return;
     }
-    onSave(payload);
+    await onSave(payload);
   }
+
+  const timeFormValid =
+    !timeEnabled ||
+    (!!draft.time_restriction_start &&
+      !!draft.time_restriction_end &&
+      draft.time_restriction_start !== draft.time_restriction_end);
+
+  const localTimePreview =
+    timeEnabled && draft.time_restriction_start && draft.time_restriction_end
+      ? formatTimeWindowLocal(
+          draft.time_restriction_start,
+          draft.time_restriction_end,
+        )
+      : null;
 
   const inputCls =
     "w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring";
@@ -203,11 +223,16 @@ function PolicyEditor({
       {/* ── Time restrictions ── */}
       <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Clock size={16} />
-            <span className="text-sm font-medium text-foreground">
-              Time-of-day restrictions (UTC)
-            </span>
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Clock size={16} />
+              <span className="text-sm font-medium text-foreground">
+                Time-of-day restrictions (UTC)
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground pl-6">
+              Stored and enforced in UTC. Users see local equivalents in chat.
+            </p>
           </div>
           <Toggle value={timeEnabled} onChange={setTimeEnabled} />
         </div>
@@ -220,6 +245,7 @@ function PolicyEditor({
                 value={draft.time_restriction_start ?? ""}
                 onChange={(e) => patch("time_restriction_start", e.target.value || null)}
                 className={inputCls}
+                required
               />
             </FieldRow>
             <FieldRow label="End (HH:MM)">
@@ -228,9 +254,20 @@ function PolicyEditor({
                 value={draft.time_restriction_end ?? ""}
                 onChange={(e) => patch("time_restriction_end", e.target.value || null)}
                 className={inputCls}
+                required
               />
             </FieldRow>
           </div>
+        )}
+        {timeEnabled && !timeFormValid && (
+          <p className="text-xs text-destructive">
+            Both start and end times are required and must be different.
+          </p>
+        )}
+        {localTimePreview && (
+          <p className="text-xs text-muted-foreground">
+            Enforced window: {localTimePreview}
+          </p>
         )}
       </div>
 
@@ -270,11 +307,21 @@ function PolicyEditor({
       <div className="flex justify-end">
         <button
           type="submit"
-          disabled={saving}
-          className="flex items-center gap-2 px-5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium disabled:opacity-60 transition-colors"
+          disabled={saving || !timeFormValid}
+          aria-busy={saving}
+          className="inline-flex min-w-[8.5rem] items-center justify-center gap-2 px-5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium disabled:opacity-60 transition-colors"
         >
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-          Save policy
+          {saving ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              Saving…
+            </>
+          ) : (
+            <>
+              <Save size={14} />
+              Save policy
+            </>
+          )}
         </button>
       </div>
     </form>
@@ -395,9 +442,12 @@ function RoleCard({
             <div className="pt-4 text-sm text-muted-foreground">
               No policy yet.{" "}
               <button
-                onClick={() => onPolicySave(role.id, {})}
-                className="text-primary hover:underline"
+                type="button"
+                disabled={saving}
+                onClick={() => handleSave({})}
+                className="inline-flex items-center gap-1.5 text-primary hover:underline disabled:opacity-60"
               >
+                {saving && <Loader2 size={12} className="animate-spin" />}
                 Create default policy
               </button>
             </div>

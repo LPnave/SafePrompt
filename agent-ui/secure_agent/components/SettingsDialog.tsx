@@ -32,11 +32,12 @@ export default function SettingsDialog() {
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Settings className="h-5 w-5" />
-            Security Settings
+            Global Default Security Level
           </DialogTitle>
           <DialogDescription>
-            Configure how aggressively the system detects and blocks security
-            threats.
+            Sets the server-wide fallback validator level. Per-role policies in
+            Admin → Roles take precedence for chat and sanitize for all
+            authenticated users.
           </DialogDescription>
         </DialogHeader>
 

@@ -137,7 +137,7 @@ Uses `pydantic-settings` `BaseSettings` which reads from the `.env` file and env
 | `DATABASE_URL` | SQLite fallback | Full SQLAlchemy async URL |
 | `JWT_SECRET` | (must override) | HMAC secret for JWT signing |
 | `JWT_ALGORITHM` | `HS256` | JWT signing algorithm |
-| `JWT_EXPIRY_MINUTES` | `60` | Access token lifetime |
+| `JWT_EXPIRY_MINUTES` | `1440` | Access token lifetime (24 hours) |
 | `JWT_REFRESH_EXPIRY_DAYS` | `7` | Refresh token lifetime |
 | `STORE_RAW_PROMPTS` | `False` | Whether to store raw prompt text in audit log |
 
@@ -325,7 +325,7 @@ JWT operations use `python-jose`:
 ```python
 create_access_token(user_id, username, role, is_admin) → str
 # Payload: { sub, username, role, is_admin, type="access", exp }
-# Expiry: JWT_EXPIRY_MINUTES (default 60 min)
+# Expiry: JWT_EXPIRY_MINUTES (default 1440 min / 24 hours)
 
 create_refresh_token(user_id) → str
 # Payload: { sub, type="refresh", exp }
@@ -1038,7 +1038,7 @@ CORS_ORIGINS=http://localhost:3000
 DATABASE_URL=postgresql+asyncpg://securemcp:securemcp_dev_pass@localhost:5432/securemcp
 
 JWT_SECRET=<long-random-string>
-JWT_EXPIRY_MINUTES=60
+JWT_EXPIRY_MINUTES=1440
 JWT_REFRESH_EXPIRY_DAYS=7
 
 DEFAULT_SECURITY_LEVEL=medium

@@ -2,7 +2,7 @@
 Auth controller — handles /api/auth/* endpoints.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
@@ -10,8 +10,10 @@ from app.api.schemas import (
     TokenResponse, UserProfileResponse,
 )
 from app.core.database import get_db
+from app.repositories.audit_repository import AuditRepository
 from app.services.auth_service import (
-    login, refresh_access_token, register_user, get_current_user,
+    login, refresh_access_token, register_user, get_current_user, build_user_profile,
+    invalidate_user_session,
 )
 from app.db.models import User, RolePolicy
 
@@ -51,6 +53,7 @@ async def register_endpoint(
         department=new_user.department,
         is_admin=False,
         is_active=new_user.is_active,
+        allow_file_uploads=False,
     )
 
 
@@ -60,14 +63,23 @@ async def refresh_endpoint(request: RefreshRequest, db: AsyncSession = Depends(g
 
 
 @router.get("/me", response_model=UserProfileResponse)
-async def me_endpoint(current: tuple[User, RolePolicy] = Depends(get_current_user)):
-    user, _ = current
+async def me_endpoint(
+    db: AsyncSession = Depends(get_db),
+    current: tuple[User, RolePolicy] = Depends(get_current_user),
+):
+    user, _policy = current
+    audit_repo = AuditRepository(db)
+    requests_today = await audit_repo.count_today_requests_for_user(user.id)
     return UserProfileResponse(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        role=user.role.name,
-        department=user.department,
-        is_admin=user.role.is_admin,
-        is_active=user.is_active,
+        **build_user_profile(user, requests_today=requests_today),
     )
+
+
+@router.post("/invalidate-session", status_code=204)
+async def invalidate_session_endpoint(
+    db: AsyncSession = Depends(get_db),
+    current: tuple[User, RolePolicy] = Depends(get_current_user),
+):
+    user, _ = current
+    await invalidate_user_session(user, db)
+    return Response(status_code=204)

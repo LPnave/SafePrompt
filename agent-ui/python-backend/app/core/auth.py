@@ -34,13 +34,20 @@ def verify_password(plain: str, hashed: str) -> bool:
 # JWT utilities
 # ---------------------------------------------------------------------------
 
-def create_access_token(user_id: int, username: str, role: str, is_admin: bool) -> str:
+def create_access_token(
+    user_id: int,
+    username: str,
+    role: str,
+    is_admin: bool,
+    token_version: int = 0,
+) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_EXPIRY_MINUTES)
     payload = {
         "sub": str(user_id),
         "username": username,
         "role": role,
         "is_admin": is_admin,
+        "tv": token_version,
         "type": "access",
         "exp": expire,
     }

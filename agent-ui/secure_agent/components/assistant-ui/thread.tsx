@@ -4,10 +4,12 @@ import {
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  Clock,
   CopyIcon,
   PencilIcon,
   RefreshCwIcon,
   Square,
+  Loader2,
 } from "lucide-react";
 
 import {
@@ -17,12 +19,14 @@ import {
   ErrorPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useAssistantState,
   useComposerRuntime,
+  useThreadListItem,
   useThreadRuntime,
 } from "@assistant-ui/react";
 
 import type { FC } from "react";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { LazyMotion, MotionConfig, domAnimation } from "motion/react";
 import * as m from "motion/react-m";
 
@@ -37,9 +41,33 @@ import {
 } from "@/components/assistant-ui/attachment";
 
 import { cn } from "@/lib/utils";
-import { AutoTitleGenerator } from "./auto-title-generator";
+import { formatTimeWindowLocal, type TimeRestriction } from "@/lib/policy-utils";
 
-export const Thread: FC = () => {
+export interface ThreadProps {
+  allowFileUploads?: boolean;
+  timeRestriction?: TimeRestriction | null;
+  chatAllowed?: boolean;
+  authToken?: string | null;
+  setSessionId?: (sessionId: string) => void;
+  setPreflightToken?: (token: string | null) => void;
+  onUserActivity?: () => void;
+  maxPromptLength?: number;
+  maxRequestsPerDay?: number;
+  requestsToday?: number;
+}
+
+export const Thread: FC<ThreadProps> = ({
+  allowFileUploads = false,
+  timeRestriction = null,
+  chatAllowed = true,
+  authToken = null,
+  setSessionId,
+  setPreflightToken,
+  onUserActivity,
+  maxPromptLength = 4000,
+  maxRequestsPerDay = 100,
+  requestsToday = 0,
+}) => {
   return (
     <LazyMotion features={domAnimation}>
       <MotionConfig reducedMotion="user">
@@ -49,7 +77,6 @@ export const Thread: FC = () => {
             ["--thread-max-width" as string]: "44rem",
           }}
         >
-          <AutoTitleGenerator />
           <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll px-4">
             <ThreadPrimitive.If empty>
               <ThreadWelcome />
@@ -67,7 +94,18 @@ export const Thread: FC = () => {
               <div className="aui-thread-viewport-spacer min-h-8 grow" />
             </ThreadPrimitive.If>
 
-            <Composer />
+            <Composer
+              allowFileUploads={allowFileUploads}
+              timeRestriction={timeRestriction}
+              chatAllowed={chatAllowed}
+              authToken={authToken}
+              setSessionId={setSessionId}
+              setPreflightToken={setPreflightToken}
+              onUserActivity={onUserActivity}
+              maxPromptLength={maxPromptLength}
+              maxRequestsPerDay={maxRequestsPerDay}
+              requestsToday={requestsToday}
+            />
           </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
       </MotionConfig>
@@ -153,7 +191,6 @@ const ThreadSuggestions: FC = () => {
         >
           <ThreadPrimitive.Suggestion
             prompt={suggestedAction.action}
-            send
             asChild
           >
             <Button
@@ -175,20 +212,103 @@ const ThreadSuggestions: FC = () => {
   );
 };
 
-const Composer: FC = () => {
+const Composer: FC<{
+  allowFileUploads: boolean;
+  timeRestriction: TimeRestriction | null;
+  chatAllowed: boolean;
+  authToken: string | null;
+  setSessionId?: (sessionId: string) => void;
+  setPreflightToken?: (token: string | null) => void;
+  onUserActivity?: () => void;
+  maxPromptLength: number;
+  maxRequestsPerDay: number;
+  requestsToday: number;
+}> = ({
+  allowFileUploads,
+  timeRestriction,
+  chatAllowed,
+  authToken,
+  setSessionId,
+  setPreflightToken,
+  onUserActivity,
+  maxPromptLength,
+  maxRequestsPerDay,
+  requestsToday,
+}) => {
+  const [textLength, setTextLength] = useState(0);
+  const [isSending, setIsSending] = useState(false);
+  const isRunning = useAssistantState(({ thread }) => thread.isRunning);
+  const isProcessing = isSending || isRunning;
+  const windowLabel =
+    timeRestriction &&
+    formatTimeWindowLocal(timeRestriction.start, timeRestriction.end);
+
   return (
     <div className="aui-composer-wrapper sticky bottom-0 mx-auto flex w-full max-w-[var(--thread-max-width)] flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
       <ThreadScrollToBottom />
-      <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col rounded-3xl border border-border bg-muted px-1 pt-2 shadow-[0_9px_9px_0px_rgba(0,0,0,0.01),0_2px_5px_0px_rgba(0,0,0,0.06)] dark:border-muted-foreground/15">
+      {!chatAllowed && timeRestriction && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+          <Clock className="size-4 shrink-0" />
+          <span>
+            Chat is unavailable outside your allowed hours: {windowLabel}
+          </span>
+        </div>
+      )}
+      <ComposerPrimitive.Root
+        className={cn(
+          "aui-composer-root relative flex w-full flex-col rounded-3xl border border-border bg-muted px-1 pt-2 shadow-[0_9px_9px_0px_rgba(0,0,0,0.01),0_2px_5px_0px_rgba(0,0,0,0.06)] dark:border-muted-foreground/15",
+          !chatAllowed && "pointer-events-none opacity-60",
+          isProcessing && chatAllowed && "opacity-80",
+        )}
+      >
         <ComposerAttachments />
         <ComposerPrimitive.Input
-          placeholder="Enter a Prompt"
-          className="aui-composer-input mb-1 max-h-32 min-h-16 w-full resize-none bg-transparent px-3.5 pt-1.5 pb-3 text-base outline-none placeholder:text-muted-foreground focus:outline-primary"
+          placeholder={
+            isProcessing
+              ? "Processing your prompt…"
+              : chatAllowed
+                ? "Enter a Prompt"
+                : "Chat unavailable outside allowed hours"
+          }
+          className="aui-composer-input mb-1 max-h-32 min-h-16 w-full resize-none bg-transparent px-3.5 pt-1.5 pb-3 text-base outline-none placeholder:text-muted-foreground focus:outline-primary disabled:cursor-not-allowed disabled:opacity-60"
           rows={1}
-          autoFocus
+          autoFocus={chatAllowed && !isProcessing}
           aria-label="Message input"
+          disabled={!chatAllowed || isProcessing}
+          onInput={(e) => setTextLength(e.currentTarget.value.length)}
         />
-        <ComposerAction />
+        <div className="flex items-center justify-between px-3.5 pb-1 text-xs text-muted-foreground">
+          <span
+            className={cn(
+              textLength > maxPromptLength * 0.9 && "text-amber-600",
+              textLength > maxPromptLength && "text-destructive",
+            )}
+          >
+            {textLength} / {maxPromptLength}
+          </span>
+          <span
+            className={cn(
+              requestsToday >= maxRequestsPerDay && "text-destructive",
+            )}
+          >
+            {requestsToday} / {maxRequestsPerDay} requests today
+          </span>
+        </div>
+        <ComposerAction
+          allowFileUploads={allowFileUploads && chatAllowed}
+          authToken={authToken}
+          setSessionId={setSessionId}
+          setPreflightToken={setPreflightToken}
+          onUserActivity={onUserActivity}
+          chatAllowed={chatAllowed}
+          maxPromptLength={maxPromptLength}
+          maxRequestsPerDay={maxRequestsPerDay}
+          requestsToday={requestsToday}
+          textLength={textLength}
+          isSending={isSending}
+          setIsSending={setIsSending}
+          isProcessing={isProcessing}
+        />
       </ComposerPrimitive.Root>
     </div>
   );
@@ -196,100 +316,153 @@ const Composer: FC = () => {
 
 const BACKEND_URL = "http://localhost:8003";
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC<{
+  allowFileUploads: boolean;
+  authToken: string | null;
+  setSessionId?: (sessionId: string) => void;
+  setPreflightToken?: (token: string | null) => void;
+  onUserActivity?: () => void;
+  chatAllowed: boolean;
+  maxPromptLength: number;
+  maxRequestsPerDay: number;
+  requestsToday: number;
+  textLength: number;
+  isSending: boolean;
+  setIsSending: (value: boolean) => void;
+  isProcessing: boolean;
+}> = ({
+  allowFileUploads,
+  authToken,
+  setSessionId,
+  setPreflightToken,
+  onUserActivity,
+  chatAllowed,
+  maxPromptLength,
+  maxRequestsPerDay,
+  requestsToday,
+  textLength,
+  isSending,
+  setIsSending,
+  isProcessing,
+}) => {
   const composer = useComposerRuntime();
   const thread = useThreadRuntime();
+  const threadListItem = useThreadListItem({ optional: true });
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  const overLength = textLength > maxPromptLength;
+  const atDailyQuota = requestsToday >= maxRequestsPerDay;
+  const sendDisabled =
+    !chatAllowed || overLength || atDailyQuota || isProcessing;
 
   const handleSanitizedSend = useCallback(
     async (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (sendDisabled || isSending) return;
+
+      onUserActivity?.();
+      setSendError(null);
+      setPreflightToken?.(null);
 
       const state = composer.getState();
       const text = state.text || "";
+      const hasAttachments = state.attachments.length > 0;
 
-      if (!text.trim()) return;
+      if (!text.trim() && !hasAttachments) return;
 
+      setIsSending(true);
       try {
-        // Generate title from original message if this is the first message
         const threadState = thread.getState();
-        if (threadState.messages.length === 0) {
-          // This will be the first message - store original for title generation
-          (window as any).__firstMessageForTitle = text;
+        const sessionId = threadListItem?.remoteId ?? threadState.threadId;
+        setSessionId?.(sessionId);
+
+        let sanitizedText = text;
+        if (text.trim() || hasAttachments) {
+          const sanitizeResponse = await fetch(`${BACKEND_URL}/api/sanitize`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+            },
+            body: JSON.stringify({
+              prompt: text,
+              session_id: sessionId,
+              has_attachments: hasAttachments,
+            }),
+          });
+
+          if (sanitizeResponse.status === 401) {
+            const err = await sanitizeResponse.json().catch(() => ({}));
+            if ((err as { detail?: string }).detail === "Session expired") {
+              window.location.href = "/login?reason=session_expired";
+              return;
+            }
+          }
+
+          if (!sanitizeResponse.ok) {
+            const err = await sanitizeResponse.json().catch(() => ({}));
+            const message =
+              (err as { detail?: string }).detail || "Request blocked by policy";
+            setSendError(message);
+            return;
+          }
+
+          const sanitizeData = await sanitizeResponse.json();
+          sanitizedText = sanitizeData.sanitized_prompt || text;
+          setPreflightToken?.(sanitizeData.preflight_token ?? null);
         }
 
-        // First, sanitize the input
-        console.log(
-          "[SanitizingComposer] Sanitizing input:",
-          text.substring(0, 100),
-        );
-
-        const sanitizeResponse = await fetch(`${BACKEND_URL}/api/sanitize`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: text,
-            // Don't override security_level - use backend's global setting
-          }),
-        });
-
-        const sanitizeData = await sanitizeResponse.json();
-        const sanitizedText = sanitizeData.sanitized_prompt || text;
-
-        console.log(
-          "[SanitizingComposer] Sanitization response:",
-          sanitizeData,
-        );
-        console.log(
-          "[SanitizingComposer] Using sanitized text:",
-          sanitizedText,
-        );
-
-        if (sanitizedText !== text) {
-          console.log("[SanitizingComposer] Input was sanitized");
-          console.log("Original:", text);
-          console.log("Sanitized:", sanitizedText);
-        } else {
-          console.log("[SanitizingComposer] No sanitization needed");
-        }
-
-        // Clear the input box immediately
-        composer.setText("");
-        
-        // Cancel any ongoing composition
-        composer.cancel();
-
-        // Add user message with sanitized content
-        console.log("[SanitizingComposer] Appending message to thread");
-        thread.append({
-          role: "user" as const,
-          content: [{ type: "text" as const, text: sanitizedText }],
-        });
+        composer.setText(sanitizedText);
+        await composer.send();
       } catch (error) {
         console.error("[SanitizingComposer] Error:", error);
-        // On error, send original (fail-safe)
-        composer.send();
+        setSendError(
+          error instanceof Error ? error.message : "Failed to send message",
+        );
+      } finally {
+        setIsSending(false);
       }
     },
-    [composer, thread],
+    [
+      authToken,
+      composer,
+      sendDisabled,
+      isSending,
+      setIsSending,
+      onUserActivity,
+      setPreflightToken,
+      setSessionId,
+      thread,
+      threadListItem?.remoteId,
+    ],
   );
 
   return (
-    <div className="aui-composer-action-wrapper relative mx-1 mt-2 mb-2 flex items-center justify-between">
-      <ComposerAddAttachment />
+    <div className="aui-composer-action-wrapper relative mx-1 mt-2 mb-2 flex flex-col gap-2">
+      {sendError && (
+        <p className="text-xs text-destructive px-1">{sendError}</p>
+      )}
+      <div className="flex items-center justify-between">
+      {allowFileUploads ? <ComposerAddAttachment /> : <div className="size-[34px]" />}
 
       <ThreadPrimitive.If running={false}>
         <TooltipIconButton
-          tooltip="Send message"
+          tooltip={isSending ? "Processing…" : "Send message"}
           side="bottom"
           type="button"
           variant="default"
           size="icon"
           className="aui-composer-send size-[34px] rounded-full p-1"
-          aria-label="Send message"
+          aria-label={isSending ? "Processing message" : "Send message"}
           onClick={handleSanitizedSend}
+          disabled={sendDisabled}
         >
-          <ArrowUpIcon className="aui-composer-send-icon size-5" />
+          {isSending ? (
+            <Loader2 className="aui-composer-send-icon size-5 animate-spin" />
+          ) : (
+            <ArrowUpIcon className="aui-composer-send-icon size-5" />
+          )}
         </TooltipIconButton>
       </ThreadPrimitive.If>
 
@@ -306,6 +479,7 @@ const ComposerAction: FC = () => {
           </Button>
         </ComposerPrimitive.Cancel>
       </ThreadPrimitive.If>
+      </div>
     </div>
   );
 };

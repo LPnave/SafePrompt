@@ -21,6 +21,7 @@ from app.api.controllers.chat_controller import router as chat_router
 from app.api.controllers.sanitize_controller import router as sanitize_router
 from app.api.controllers.admin_controller import router as admin_router
 from app.api.controllers.reporting_controller import router as reporting_router
+from app.api.controllers.threads_controller import router as threads_router
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -91,6 +92,7 @@ app.include_router(chat_router)
 app.include_router(sanitize_router)
 app.include_router(admin_router)
 app.include_router(reporting_router)
+app.include_router(threads_router)
 
 
 @app.get("/")

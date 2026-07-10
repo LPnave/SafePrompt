@@ -10,6 +10,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirect = searchParams.get("redirect") || "/";
+  const reason = searchParams.get("reason");
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -45,6 +46,11 @@ function LoginForm() {
             <p className="text-sm text-muted-foreground mt-1">
               Enterprise AI Assistant — sign in to continue
             </p>
+            {reason === "session_expired" && (
+              <p className="text-sm text-amber-700 dark:text-amber-300 mt-3">
+                Your session expired due to inactivity. Please sign in again.
+              </p>
+            )}
           </div>
         </div>
 

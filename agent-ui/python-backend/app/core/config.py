@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
 
     # CORS Configuration
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000"
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # JWT Configuration
     JWT_SECRET: str = "change-this-in-production-use-a-long-random-string"
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRY_MINUTES: int = 60
+    JWT_EXPIRY_MINUTES: int = 1440  # 24 hours
     JWT_REFRESH_EXPIRY_DAYS: int = 7
 
     # Privacy: set to True to store raw prompt text in audit_events (off by default)

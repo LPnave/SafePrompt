@@ -171,8 +171,9 @@ export default function SecurityLevelSelector() {
       {/* Info */}
       <div className="rounded-lg border border-border bg-muted/50 p-3">
         <p className="text-xs text-muted-foreground">
-          <strong>Note:</strong> Changes apply immediately to all new prompts.
-          Restart is not required.
+          <strong>Note:</strong> This global default does not override per-role
+          security levels. Role policies in Admin → Roles apply to chat and
+          sanitize for authenticated users.
         </p>
       </div>
     </div>

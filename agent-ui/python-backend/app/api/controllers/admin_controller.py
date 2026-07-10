@@ -3,17 +3,19 @@ Admin controller — user management and role policy CRUD.
 All endpoints require admin role.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
     CreateUserRequest, UpdateUserRequest, UserResponse,
     RoleResponse, RolePolicyResponse, UpdatePolicyRequest,
     CreateRoleRequest, UpdateRoleRequest,
+    AdminThreadListResponse, AdminThreadSummary, MessageRepositoryResponse,
 )
 from app.core.database import get_db
 from app.services.auth_service import require_admin
 from app.services import admin_service
+from app.services.thread_service import ThreadService, messages_to_repository
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -185,7 +187,7 @@ async def update_policy(
     db: AsyncSession = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    updates = request.model_dump(exclude_none=True)
+    updates = request.model_dump(exclude_unset=True)
     policy = await admin_service.update_role_policy(role_id, updates, db)
     return _policy_response(policy)
 
@@ -198,3 +200,54 @@ async def create_policy(
 ):
     policy = await admin_service.create_policy_for_role(role_id, db)
     return _policy_response(policy)
+
+
+# ---------------------------------------------------------------------------
+# Chat history (admin read-only)
+# ---------------------------------------------------------------------------
+
+@router.get("/threads", response_model=AdminThreadListResponse)
+async def list_threads_admin(
+    user_id: int | None = None,
+    username: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    service = ThreadService(db)
+    threads = await service.threads.list_admin(
+        user_id=user_id,
+        username=username,
+        limit=limit,
+        offset=offset,
+    )
+    summaries: list[AdminThreadSummary] = []
+    for thread in threads:
+        count = await service.messages.count_by_thread(thread.id)
+        summaries.append(
+            AdminThreadSummary(
+                id=thread.id,
+                title=thread.title,
+                status=thread.status,
+                user_id=thread.user_id,
+                username=thread.user.username if thread.user else "unknown",
+                message_count=count,
+                updated_at=thread.updated_at,
+            )
+        )
+    return AdminThreadListResponse(threads=summaries, total=len(summaries))
+
+
+@router.get("/threads/{thread_id}/messages", response_model=MessageRepositoryResponse)
+async def list_thread_messages_admin(
+    thread_id: str,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    service = ThreadService(db)
+    thread = await service.threads.get_by_id(thread_id)
+    if not thread:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+    rows = await service.messages.list_by_thread(thread_id)
+    return MessageRepositoryResponse(**messages_to_repository(rows))

@@ -12,6 +12,7 @@ from app.api.schemas import ChatRequest
 from app.core.database import get_db
 from app.db.models import User, RolePolicy
 from app.repositories.audit_repository import AuditRepository
+from app.repositories.message_repository import MessageRepository
 from app.services.auth_service import get_current_user
 from app.services.chat_service import run_chat_pipeline
 from app.utils.logger import setup_logger
@@ -50,12 +51,16 @@ async def chat_endpoint(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid request: {e}")
 
     audit_repo = AuditRepository(db)
+    message_repo = MessageRepository(db)
     stream = await run_chat_pipeline(
         messages=request.messages,
         user=user,
         policy=policy,
         session_id=request.session_id,
+        preflight_token=request.preflight_token,
         audit_repo=audit_repo,
+        message_repo=message_repo,
+        db=db,
     )
 
     return StreamingResponse(

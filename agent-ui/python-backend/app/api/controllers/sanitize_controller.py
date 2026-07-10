@@ -4,7 +4,8 @@ Sanitize controller — /api/sanitize endpoints.
 
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import (
     SanitizeRequest, SanitizeResponse,
@@ -12,8 +13,12 @@ from app.api.schemas import (
     HealthResponse, StatsResponse,
     SecurityLevelUpdate, SecurityLevelResponse,
 )
+from app.core.database import get_db
+from app.db.models import User, RolePolicy
+from app.repositories.audit_repository import AuditRepository
+from app.repositories.message_repository import MessageRepository
 from app.services.auth_service import get_current_user, require_admin
-from app.services.sanitize_service import sanitize_single, sanitize_batch
+from app.services.sanitize_service import sanitize_single_with_policy, sanitize_batch_with_policy
 from app.services.chat_service import get_validator
 from app.utils.logger import setup_logger
 
@@ -26,19 +31,45 @@ _request_count = 0
 _total_time = 0.0
 
 
+def _reject_security_level_override(
+    security_level: str | None,
+    user: User,
+) -> None:
+    """Non-admins cannot override role policy security level."""
+    if security_level and not user.role.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins may override security_level on sanitize requests.",
+        )
+
+
 @router.post("/api/sanitize", response_model=SanitizeResponse)
 async def sanitize_endpoint(
     request: SanitizeRequest,
-    _current=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    current=Depends(get_current_user),
 ):
     global _request_count, _total_time
-    result = sanitize_single(request.prompt, request.security_level)
+    user, policy = current
+    _reject_security_level_override(request.security_level, user)
+
+    audit_repo = AuditRepository(db)
+    message_repo = MessageRepository(db)
+    result = await sanitize_single_with_policy(
+        prompt=request.prompt,
+        user=user,
+        policy=policy,
+        audit_repo=audit_repo,
+        session_id=request.session_id,
+        has_attachments=request.has_attachments,
+        message_repo=message_repo,
+    )
     _request_count += 1
     _total_time += result["processing_time_ms"]
 
     details = None
     if request.return_details:
-        details = {"security_level": request.security_level or "global"}
+        details = {"security_level": policy.security_level}
 
     return SanitizeResponse(**result, sanitization_details=details)
 
@@ -46,10 +77,24 @@ async def sanitize_endpoint(
 @router.post("/api/sanitize/batch", response_model=BatchSanitizeResponse)
 async def sanitize_batch_endpoint(
     request: BatchSanitizeRequest,
-    _current=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    current=Depends(get_current_user),
 ):
+    user, policy = current
+    _reject_security_level_override(request.security_level, user)
+
+    audit_repo = AuditRepository(db)
+    message_repo = MessageRepository(db)
     start = time.time()
-    results = sanitize_batch(request.prompts, request.security_level)
+    results = await sanitize_batch_with_policy(
+        prompts=request.prompts,
+        user=user,
+        policy=policy,
+        audit_repo=audit_repo,
+        session_id=request.session_id,
+        has_attachments=request.has_attachments,
+        message_repo=message_repo,
+    )
     total_ms = (time.time() - start) * 1000
 
     return BatchSanitizeResponse(
@@ -129,5 +174,4 @@ async def update_security_level(
             message=f"Global security level updated to {new_level.value}",
         )
     except ValueError:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=f"Invalid level: {request.level}")
